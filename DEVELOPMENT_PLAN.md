@@ -10,13 +10,25 @@ Build a standalone repo that ingests safe events/errors from frontend + backend 
 
 Custom event ingestion · Custom error ingestion · Strict privacy allowlists · App/environment registration · API keys · React dashboard · Session timeline · React frontend SDK · .NET backend SDK · Azure Key Vault integration · **SCH PostHog→adaptive-observability migration**.
 
-**Deferred:** visual session replay, autocapture, feature flags, A/B testing, funnels, heatmaps, surveys.
+**Deferred (post-MVP, planned):** visual session replay via **rrweb** — designed for in Phase 4 (SDK leaves a slot), implemented in **Phase 9**. Disabled by default; gated on a separate privacy review.
+
+**Deferred (out of scope, no plan):** autocapture, feature flags, A/B testing, funnels, heatmaps, surveys.
+
+## Status
+
+| Phase | State |
+|---|---|
+| 0 — Foundation & Repo Setup | **Done.** Removed from this doc; see `git log`. |
+| 1 — Backend Ingestion MVP | **Done.** Removed from this doc; see `git log`. |
+| 2 — Azure Key Vault & Deployment | **Partial.** KV config provider, fail-fast validation, and setup docs shipped (was 2.2 + 2.5). Dev vault `AdaptiveToolsKeyVault` (centralus, RBAC) holds four placeholder secrets tagged `purpose=adaptive-observability`. Hosting (2.3) and DB-secret cutover (2.4) are open below; UAT/Prod vault provisioning (2.1 partial) is open below. |
+| 3 — React Dashboard MVP | **Done.** Removed from this doc; see `git log`. |
+| 4 – 9 | Open. Documented below. |
 
 ## Constraints
 
 - **Privacy first.** No patient names, emails, usernames, DOBs, raw URLs, query strings, request/response bodies, exception messages, stack traces, or JWTs. Allowlists enforced server-side at ingestion — unsafe fields are *rejected and logged*, not silently dropped. Rules already validated by the PostHog effort.
-- **Azure-native.** ASP.NET Core 8/9, Azure SQL, Azure Key Vault with managed identity in deployed environments.
-- **No new third-party dependencies without approval.**
+- **Azure-native.** ASP.NET Core 8/9, Azure SQL, Azure Key Vault with managed identity in deployed environments. **Azure Blob Storage** added in Phase 9 for replay chunks (not in MVP).
+- **No new third-party dependencies without approval.** Phase 9 introduces `rrweb` + `rrweb-player` (MIT) — flagged as a net-new dependency requiring explicit approval at Phase 9 entry.
 - **Separate repo** from SCH and other onboarded apps.
 - **Contract continuity.** Event names, identity rules, allowed property shapes, and route normalization must match the existing `POSTHOG_EVENT_CATALOG.md` so SCH migration is a swap, not a rewrite.
 
@@ -93,8 +105,10 @@ React Admin Dashboard (health, error explorer, event explorer, session timeline,
 | Hosting | Azure App Service or Container Apps |
 | Frontend | React + TypeScript + Vite |
 | Frontend libs | React Router, TanStack Query, Recharts, Tailwind, shadcn/ui |
-| FE SDK | `packages/observability-client-js` (TS) — API shape mirrors SCH_UI's `analytics.ts` |
-| BE SDK | `packages/observability-client-dotnet` — implements SCH's `IAnalyticsService` |
+| FE SDK | `packages/observability-client-js` (TS) — API shape mirrors SCH_UI's `analytics.ts`; lazy `replay/` submodule (Phase 9) |
+| BE SDK | `packages/observability-client-dotnet` — implements SCH's `IAnalyticsService` (replay is FE-only; BE contract unchanged) |
+| Replay (Phase 9) | `rrweb` (record) + `rrweb-player` (playback), MIT — gated on approval; off by default |
+| Replay storage (Phase 9) | Azure Blob Storage (chunks) + Azure SQL metadata; **never** Azure SQL for chunk bodies |
 
 ## Repo Structure
 
@@ -152,198 +166,13 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 ## Phase 0 — Foundation & Repo Setup
 
-**Goal:** Repo that builds locally, has CI green, and seeds documentation from the validated PostHog Phase 1 work.
-
-**Exit criteria:** `docker-compose up` brings up empty backend + frontend + DB; CI runs lint/build on PRs; `docs/` contains architecture, privacy, event catalog, identity, and route normalization docs derived from existing PostHog assets.
-
-### Issue 0.1 — Create `adaptive-observability` repo and root scaffolding
-**Description:** Initialize a new GitHub repo with the structure above. Add `README.md`, license, `.editorconfig`, `.gitignore`.
-**Acceptance criteria:**
-- [ ] Repo created, `main` default, branch protection on
-- [ ] Root `README.md` summarizes platform purpose + links to `docs/`
-- [ ] `.gitignore` ignores `bin/`, `obj/`, `node_modules/`, `dist/`, `*.user`, `appsettings.*.local.json`
-- [ ] License decided
-**Investigation questions:**
-- Which GitHub org hosts this — same one that hosts SCH?
-- Standard internal license/header file?
-
-### Issue 0.2 — Write `docs/architecture.md`
-**Description:** Document ingestion flow, dashboard flow, onboarding flow, deployment topology. Note migration path from PostHog.
-**Acceptance criteria:**
-- [ ] Sections: Overview, Ingestion path, Dashboard path, Onboarding path, Deployment topology, Migration-from-PostHog summary
-- [ ] Diagrams (mermaid preferred)
-- [ ] Reviewed by another engineer
-**Investigation questions:**
-- Mermaid in GitHub vs. checked-in PNGs — team norm?
-
-### Issue 0.3 — Write `docs/privacy-rules.md` (seed from PostHog work)
-**Description:** Codify forbidden vs. allowed fields. **Copy the validated lists from `POSTHOG_EVENT_CATALOG.md`** verbatim — these have already passed review.
-**Acceptance criteria:**
-- [ ] "Never store" list: patient names, emails, usernames, display names, DOBs, SSNs, policy/insurance IDs, clinical notes, raw URLs, query strings, request/response bodies, exception messages, stack traces, JWTs, React component stack text
-- [ ] "Allowed fields" list: `app_id`, `environment`, `release_version`, `release_sha`, `normalized_route`, `endpoint_group`, `feature_area`, `http_status_code`, `correlation_id`, `exception_type`, `error_type`, `job_name`, `generic_role`, safe booleans/counters
-- [ ] "Reject and log" rule documented (writes `SafetyViolations`)
-- [ ] Replay disabled by default; UAT-only until separate privacy review
-**Investigation questions:**
-- Has compliance/legal already signed off on these lists for PostHog? If yes, reference the sign-off; if no, gate Phase 6 cutover on it.
-
-### Issue 0.4 — Write `docs/event-catalog.md` (port `POSTHOG_EVENT_CATALOG.md`)
-**Description:** Port the existing catalog. Preserve event names, allowed properties, and identity rules exactly.
-**Acceptance criteria:**
-- [ ] Events ported: `auth_login_success`, `auth_logout`, `page_viewed`, `api_request_failed`, `frontend_exception`, `server_error_occurred`, `background_job_failed`
-- [ ] Each event has description, required props, allowed optional props, example JSON
-- [ ] Catalog format chosen (code vs. markdown vs. DB) and decision recorded
-- [ ] Phase 2 deferred events listed in an appendix (not in MVP)
-**Investigation questions:**
-- Source-of-truth: code (compile-time safety in SDKs) vs. DB (runtime hot-edit) vs. markdown (human-friendly)?
-
-### Issue 0.5 — Write `docs/identity-rules.md`
-**Description:** Lift the identity strategy from PostHog work.
-**Acceptance criteria:**
-- [ ] Human users: `String(userId)` (raw `sub` claim, e.g. `"42"`)
-- [ ] API clients: `api_client_{id}`
-- [ ] Background jobs: `system:background-service`
-- [ ] Dev test: `test:dev`
-- [ ] Explicit "do not use": `user_{id}`, email, username, displayName
-
-### Issue 0.6 — Write `docs/route-normalization.md`
-**Description:** Document the rules used by `routeUtils.ts` and `AnalyticsIdentity.cs`. Provides the spec the SDKs must implement.
-**Acceptance criteria:**
-- [ ] Rules: strip numeric IDs, UUIDs, ULIDs, tokens >= configured length
-- [ ] FE example: `/patients/123/orders/456` → `/patients/:id/orders/:id`
-- [ ] BE example: `/api/orders/123` → `orders` (endpoint group)
-- [ ] Edge case noted: avoid token threshold producing `posthog-{id}-test` from `posthog-500-test`
-
-### Issue 0.7 — Add `docker-compose.yml`
-**Description:** mssql + backend + frontend up with one command.
-**Acceptance criteria:**
-- [ ] `docker-compose up` starts mssql, backend, frontend
-- [ ] Backend runs migrations; frontend reaches backend
-- [ ] README documents bring-up
-**Investigation questions:**
-- mssql-server vs. azure-sql-edge for closer parity?
-
-### Issue 0.8 — CI pipeline
-**Description:** GitHub Actions for backend, frontend, SDK packages.
-**Acceptance criteria:**
-- [ ] `backend.yml`, `frontend.yml`, `sdks.yml` green on initial empty PR
-**Investigation questions:**
-- npm vs. pnpm vs. yarn — match SCH_UI's choice for engineer mental-model continuity
-
-### Issue 0.9 — Backend skeleton
-**Description:** `.NET 8/9` solution with `Api`, `Application`, `Domain`, `Infrastructure`, `Worker` + test projects. Only `/health` endpoint.
-**Acceptance criteria:**
-- [ ] Solution builds clean
-- [ ] `/health` returns 200 + version + git sha
-- [ ] Layer references enforced
-**Investigation questions:**
-- .NET 8 LTS vs. 9 — what does SCH_API target?
-
-### Issue 0.10 — Frontend skeleton
-**Description:** Vite + React + TS + Tailwind + shadcn/ui shell.
-**Acceptance criteria:**
-- [ ] `pnpm dev` serves placeholder dashboard
-- [ ] Build clean, ESLint + Prettier configured
-
-### Issue 0.11 — EF Core migration setup
-**Description:** Initial empty migration runnable locally.
-**Acceptance criteria:**
-- [ ] `dotnet ef database update` runs against docker-compose mssql
-**Investigation questions:**
-- EF migrations vs. DbUp/Flyway — what does SCH_API use?
+**Status: Done.** Repo scaffolding, docs, docker-compose, CI, and `/health` endpoint are committed. See `git log` for details.
 
 ---
 
 ## Phase 1 — Backend Ingestion MVP
 
-**Goal:** Backend accepts safe events and errors from authenticated apps, validates against allowlists derived from the ported event catalog, and persists to Azure SQL.
-
-**Exit criteria:** A test client can `POST /api/ingest/events` and `POST /api/ingest/errors` with a valid API key; safe fields persist; unsafe fields are rejected with a `SafetyViolations` row written; e2e integration test passes for every Phase 1 event from the PostHog catalog.
-
-### Issue 1.1 — Domain models: `Application`, `AppEnvironment`
-**Description:** EF entities for registered apps and per-environment config (Dev/UAT/Prod).
-**Acceptance criteria:**
-- [ ] `Applications`: Id, Name, Slug (unique), Description, CreatedAt, IsActive
-- [ ] `AppEnvironments`: Id, ApplicationId, EnvironmentName, PublicClientKeyHash, ServerApiKeyHash, ReplayEnabled (default false), AllowedOrigins, CreatedAt, IsActive
-- [ ] Unique index on (ApplicationId, EnvironmentName)
-- [ ] Seed: `SCH` app with `Development`, `UAT`, `Production` environments
-**Investigation questions:**
-- AllowedOrigins JSON column vs. table?
-
-### Issue 1.2 — `ApiKeys` model + hashing
-**Description:** Hash-only storage. Two key types: `public_client` (FE), `server_api` (BE). Peppered SHA-256 with pepper from Key Vault.
-**Acceptance criteria:**
-- [ ] `ApiKeys`: Id, ApplicationId, EnvironmentId, KeyHash, KeyType, CreatedAt, ExpiresAt, RevokedAt, CreatedByUserId
-- [ ] One-time plaintext display on create
-- [ ] Lookup constant-time on indexed hash
-**Investigation questions:**
-- Key prefix scheme (`aopub_`, `aoserv_`) for dev usability?
-
-### Issue 1.3 — Auth middleware
-**Description:** Reads `X-Observability-Key`, hashes, looks up active key, attaches resolved app/env/key-type to `HttpContext`.
-**Acceptance criteria:**
-- [ ] Applied to `/api/ingest/*`
-- [ ] 401 generic body on missing/invalid/revoked
-- [ ] Public keys can hit only public-allowed endpoints
-**Investigation questions:**
-- Header name — `X-Observability-Key` vs. `Authorization: Bearer`?
-
-### Issue 1.4 — `Events` table + `POST /api/ingest/events`
-**Description:** Generic event ingestion. Validates against the event-catalog allowlist; stores allowed properties; returns 202.
-**Acceptance criteria:**
-- [ ] `Events`: Id, ApplicationId, EnvironmentId, EventName, DistinctId, SessionId, CorrelationId, NormalizedRoute, EndpointGroup, FeatureArea, PropertiesJson, ReleaseSha, CreatedAt
-- [ ] Accepts the seven Phase 1 events from the ported catalog
-- [ ] 202 success, 400 schema error, 422 allowlist violation
-- [ ] Indexes: (ApplicationId, EnvironmentId, CreatedAt), (ApplicationId, EventName, CreatedAt)
-
-### Issue 1.5 — `Errors` table + `POST /api/ingest/errors`
-**Description:** Error ingestion with fingerprinting and occurrence aggregation.
-**Acceptance criteria:**
-- [ ] `Errors` per Errors model in this plan
-- [ ] Repeat errors increment `OccurrenceCount`, update `LastSeenAt`
-- [ ] No `ExceptionMessage` or `StackTrace` columns ever
-- [ ] 202 on success
-**Investigation questions:**
-- Should `release_sha` be in the fingerprint, or surfaced separately so a bug "spans releases"?
-
-### Issue 1.6 — Property allowlist validator
-**Description:** Per-event-name allowlist sourced from the catalog. Drops unknown keys; writes `SafetyViolations` for known-forbidden keys (email, username, raw_url, exception_message, stack_trace, etc.).
-**Acceptance criteria:**
-- [ ] Allowlist sourced from a single artifact
-- [ ] Unit-tested against every Phase 1 event
-- [ ] Forbidden field names trigger violation row
-**Investigation questions:**
-- Source of truth: code vs. DB row?
-- Capture field name only, or name + (redacted) length/type?
-
-### Issue 1.7 — `SafetyViolations` table
-**Description:** Records every rejected unsafe field. Never stores the offending value.
-**Acceptance criteria:**
-- [ ] Columns: Id, ApplicationId, EnvironmentId, EventName, RejectedField, Reason, CreatedAt
-- [ ] No column ever stores the rejected value
-- [ ] Index (ApplicationId, EnvironmentId, CreatedAt)
-
-### Issue 1.8 — Correlation ID propagation
-**Description:** Server reads `X-Correlation-Id`, stores on Events/Errors, generates one if missing.
-**Acceptance criteria:**
-- [ ] All Events/Errors persist `CorrelationId`
-- [ ] Generated IDs are 128-bit ULIDs/UUIDs
-**Investigation questions:**
-- Match SCH_API's existing correlation-ID header — what is it today?
-
-### Issue 1.9 — Integration tests for Phase 1 events
-**Description:** End-to-end tests against containerized SQL Server, exercising every event from the ported catalog and every documented rejection case.
-**Acceptance criteria:**
-- [ ] Each Phase 1 event has a happy-path test
-- [ ] Each forbidden field has a rejection test
-- [ ] Auth: valid, missing, revoked, wrong-type-for-endpoint
-- [ ] CI runs them
-
-### Issue 1.10 — Dev-only smoke test endpoint
-**Description:** Equivalent of SCH_API's `/api/dev/posthog-test`, scoped to Development only. Helps confirm ingestion end-to-end during local dev.
-**Acceptance criteria:**
-- [ ] Endpoint emits a `dev_smoke_test` event
-- [ ] Compiled out of non-Development builds (or guarded by env check that fails closed)
-- [ ] Documented in onboarding guide
+**Status: Done.** Domain entities, ingestion endpoints (`/api/ingest/events`, `/api/ingest/errors`), API key auth, allowlist validator, `SafetyViolations` write path, correlation-ID middleware, dev smoke test, and integration tests are committed. See `git log` for details.
 
 ---
 
@@ -351,96 +180,87 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 **Goal:** Deployed Observability API loads secrets from Key Vault via managed identity. No secrets in code or app settings.
 
-**Exit criteria:** Backend in Azure App Service connects to Azure SQL using a connection string from `kv-observability-{env}`, with no plaintext secrets in any committed file.
+**Exit criteria:** Backend in Azure (App Service or Container Apps) connects to Azure SQL using a connection string sourced from Key Vault, with no plaintext secrets in any committed file.
 
-### Issue 2.1 — Provision three Key Vaults (Dev/UAT/Prod)
-**Description:** One vault per environment to limit blast radius.
-**Acceptance criteria:**
-- [ ] `kv-observability-dev`, `kv-observability-uat`, `kv-observability-prod` provisioned
-- [ ] Soft-delete + purge protection on prod
-- [ ] Access restricted to managed identities + small admin group
-**Investigation questions:**
-- Bicep vs. Terraform vs. portal+ARM — team standard?
+**Done in this phase already:**
+- Issue 2.2 (KV config provider with fail-fast) — `backend/src/Observability.Api/Configuration/KeyVaultConfiguration.cs`.
+- Issue 2.5 (`docs/azure-key-vault-setup.md`) — provisioning steps + rotation runbooks.
+- Dev portion of 2.1 — `AdaptiveToolsKeyVault` (centralus, RBAC) holds four placeholder secrets tagged `purpose=adaptive-observability`. UAT/Prod vaults are not yet provisioned.
 
-### Issue 2.2 — Key Vault configuration provider
-**Description:** Wire `Microsoft.Extensions.Configuration.AzureKeyVault`. Refuse startup if required secrets missing in non-Development.
-**Acceptance criteria:**
-- [ ] Required: `ObservabilityDbConnection`, `JwtSigningKey`, `ApiKeyHashPepper`, `EncryptionKey`
-- [ ] Dev falls back to user secrets / `appsettings.Development.json`
-- [ ] Fail-fast in UAT/Prod with clear log line
+### Issue 2.1 — Provision UAT and Prod vaults
 
-### Issue 2.3 — Managed identity for App Service
-**Description:** Enable system-assigned MI; grant `get/list` on same-environment vault only.
+**Description:** Dev shares the existing `AdaptiveToolsKeyVault`. UAT and Prod still need dedicated `kv-observability-uat` and `kv-observability-prod` for blast-radius isolation. Provision alongside their respective hosting envs (no point standing up an empty vault).
+
 **Acceptance criteria:**
-- [ ] MI enabled on all three App Services
-- [ ] Each MI scoped to its same-environment vault
-- [ ] Verified via deployed test secret read
-**Investigation questions:**
-- System-assigned vs. user-assigned — team preference for portability?
+- [ ] `kv-observability-uat`, `kv-observability-prod` provisioned in their App Service's region
+- [ ] Soft-delete on both; purge protection on prod
+- [ ] RBAC-only (no access policies); App Service MI granted `Key Vault Secrets User`, scoped to that vault only
+
+**Decisions needed:**
+- IaC tool — Bicep, Terraform, or stay on `az` CLI? An authoritative module should land before UAT.
+- Cut Dev over to a dedicated `kv-observability-dev` at the same time, or leave it on the shared `AdaptiveToolsKeyVault`? (Shared is acceptable for Dev only; reconsider if other tools' principals start needing access.)
+
+### Issue 2.3 — Hosting environment + managed identity for the Observability API
+
+**Description:** The deployed API needs a hosting environment whose system-assigned managed identity has `Key Vault Secrets User` on its same-environment vault.
+
+**Investigation findings (subscription `Adaptive Subscription`, snapshot 2026-04-30):**
+- No App Services, App Service Plans, Function Apps, or Container Apps exist.
+- `Microsoft.App` resource provider is **not registered**, so Container Apps requires an extra `az provider register -n Microsoft.App` step.
+- One resource group exists (`AdaptiveTools`, centralus). Either colocate or spin up `rg-observability-{env}`.
+
+**Recommended path:** App Service Linux + system-assigned MI in `centralus` (matches SQL + KV regions). Container Apps is viable but adds RP registration and ingress configuration.
+
+**Acceptance criteria:**
+- [ ] App Service Plan + App Service (or Container App) provisioned for Dev
+- [ ] System-assigned MI enabled on the App Service
+- [ ] MI granted `Key Vault Secrets User` on the Dev vault, scoped to that vault only
+- [ ] `KeyVault__Uri` app setting points at the Dev vault
+- [ ] `/health` returns 200 from the deployed API; KV-backed config resolves on startup
+
+**Decisions needed:**
+- **Hosting platform:** App Service Linux (recommended) vs Container Apps (requires RP registration first).
+- **SKU for Dev:** B1 (~$13/mo), P0v3 (~$50/mo), or other.
+- **Globally-unique app name:** e.g. `app-observability-dev`, `adaptive-observability-dev`.
+- **Resource group:** new `rg-observability-dev` (recommended) vs colocate in `AdaptiveTools`.
+- **Identity flavor:** system-assigned (simpler) vs user-assigned (portable across slots/apps).
+- **Slot strategy:** single slot for Dev, or staging slot for blue/green?
 
 ### Issue 2.4 — Move database secret to Key Vault
-**Description:** Store full SQL connection string (or AAD-auth config) in Key Vault.
-**Acceptance criteria:**
-- [ ] `ObservabilityDbConnection` set per env
-- [ ] No `appsettings.*.json` contains UAT/Prod connection strings
-- [ ] Backend connects in deployed envs
-**Investigation questions:**
-- AAD auth (MI → SQL) vs. SQL auth?
 
-### Issue 2.5 — `docs/azure-key-vault-setup.md`
-**Description:** Setup steps + secret rotation runbook.
+**Description:** Replace the placeholder `ObservabilityDbConnection` in Key Vault with a real connection string and have the deployed API connect to Azure SQL through it. Read-only investigation surfaced complications the original plan didn't anticipate.
+
+**Investigation findings (snapshot 2026-04-30):**
+- One Azure SQL server: `adaptivetoolssql` (centralus). AAD admin: `brandon@adaptivesoftwarellc.com`.
+- **SQL auth is disabled** (`azureAdOnlyAuthentication=true`). Username/password connection strings will not work — the deployed API must auth via Managed Identity (`Authentication=Active Directory Default` in the connection string).
+- **Public network access is disabled** on the server. The App Service must reach SQL via VNet integration + a private endpoint, or the server's public-access posture must be reversed (regression of an explicit hardening decision).
+- One paused database (`MaintenanceDB`, GP_S_Gen5_1 serverless). No `Observability*` database exists.
+- The existing `DependencyInjection.cs` uses `UseSqlServer(connectionString)` which already handles `Authentication=Active Directory Default` — **no code change required** for MI auth.
+
+**Path A (recommended):** Reuse `adaptivetoolssql` for Dev; create a new `ObservabilityDev` database; connect via MI through VNet-integrated App Service + private endpoint.
+
+**Path B:** Stand up a dedicated `sql-observability-{env}` server. Cleaner isolation, more cost, more setup. Probably right for Prod; overkill for Dev.
+
 **Acceptance criteria:**
-- [ ] Step-by-step fresh-env setup
-- [ ] Rotation runbook (DB password, hash pepper)
-- [ ] Identity + secret flow diagram
+- [ ] `ObservabilityDev` database created (Path A) or new SQL server + db (Path B)
+- [ ] App Service can reach SQL (VNet integration + private endpoint, or alternative)
+- [ ] App Service MI granted DB access via `CREATE USER [<app-name>] FROM EXTERNAL PROVIDER` + `db_datareader` / `db_datawriter` / `db_ddladmin`
+- [ ] `ObservabilityDbConnection` secret in KV holds the real passwordless connection string
+- [ ] `appsettings.*.json` in deployed envs contain no connection string
+- [ ] Deployed API connects; ingestion smoke test writes a row
+
+**Decisions needed:**
+- **Server topology:** Path A (reuse `adaptivetoolssql`) vs Path B (dedicated server). Recommend A for Dev, decide separately for UAT/Prod.
+- **Network access:** VNet-integrate App Service + add private endpoint (recommended) vs re-enable public network with a firewall rule (regression).
+- **Database SKU:** `GP_S_Gen5_1` serverless (~$5–15/mo idle, matches `MaintenanceDB`) or fixed-capacity?
+- **Migration strategy:** generate `dotnet ef migrations add Initial` and switch `EnsureCreatedAsync` → `MigrateAsync` *before* the first non-Dev deploy. Currently dev-only EnsureCreated is in place.
+- **Human dependency:** the `CREATE USER … FROM EXTERNAL PROVIDER` T-SQL must be run by the AAD admin on SQL (`brandon@adaptivesoftwarellc.com`). No other principal can grant DB access. Capture his availability before the deploy window.
 
 ---
 
 ## Phase 3 — React Dashboard MVP
 
-**Goal:** Internal admin UI: filter by app + env + date range, see headline counts. **Replaces the planned "SCH Phase 1 Health Dashboard" that was going to live in PostHog.**
-
-**Exit criteria:** Picking SCH + UAT + 24h shows accurate live counts. Cards mirror the original PostHog dashboard plan.
-
-### Issue 3.1 — Dashboard shell
-**Description:** Layout, sidebar nav, top bar with env switcher, route shell. Auth placeholder until Phase 8.
-**Acceptance criteria:**
-- [ ] Routes: `/health`, `/errors`, `/events`, `/sessions`, `/admin/apps`
-- [ ] Placeholder login flagged with TODO
-
-### Issue 3.2 — App + environment + date-range filters
-**Description:** Persistent filter bar; selection in URL params + localStorage.
-**Acceptance criteria:**
-- [ ] Dropdowns from `/api/apps`
-- [ ] Date range presets (1h, 24h, 7d, 30d, custom)
-- [ ] All pages respect the filter
-
-### Issue 3.3 — `GET /api/dashboard/health` + cards
-**Description:** Mirrors the originally-planned PostHog dashboard cards.
-**Acceptance criteria:**
-- [ ] Cards: Backend 500s, FE exceptions, FE API failures, BG job failures, Page views (by feature_area), Login count, Top failing endpoint groups, Errors by release, Errors by environment, Recent sessions with errors
-- [ ] Each card with sparkline (Recharts) + total
-- [ ] Cards link to filtered Error/Event/Session views
-
-### Issue 3.4 — Recent errors table
-**Description:** Grouped by fingerprint, sortable by `LastSeenAt`/`OccurrenceCount`.
-**Acceptance criteria:**
-- [ ] Columns: ErrorType, Route/JobName, OccurrenceCount, LastSeenAt, Release, Env
-- [ ] Click → error detail (occurrence timeline, sample correlation IDs, linked sessions)
-- [ ] Server-side pagination
-
-### Issue 3.5 — Event explorer
-**Description:** Search/filter raw events.
-**Acceptance criteria:**
-- [ ] Filterable, server-paginated
-- [ ] JSON properties viewer per row
-- [ ] CSV export
-
-### Issue 3.6 — Session list
-**Description:** Recent sessions with error flag.
-**Acceptance criteria:**
-- [ ] Columns: SessionId, App/Env, DistinctId, StartedAt, EndedAt, HasError, ReleaseSha
-- [ ] Click → session timeline (Phase 5)
+**Status: Done.** Dashboard shell, persistent app/env/date filter, health page with cards + sparklines, errors table + detail drawer, event explorer with JSON viewer + CSV export, sessions placeholder, and admin/apps page are committed. Backend `/api/apps` and `/api/dashboard/*` endpoints back the UI. Auth is a placeholder until Phase 8. See `git log` for details.
 
 ---
 
@@ -517,7 +337,18 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 - [ ] `LastSuppressedAt` tracked
 - [ ] Test: 100 identical failures within 5 min produce one incident with count=100
 
-### Issue 4.9 — SDK documentation + quickstarts
+### Issue 4.9 — Reserve replay slot in `observability-client-js` (no rrweb yet)
+**Description:** Define the public `init({ replay })` config shape and a no-op `replay` adapter interface so Phase 9 can drop in an rrweb implementation without changing call sites or breaking SemVer. **No rrweb dependency is added in this phase.**
+**Acceptance criteria:**
+- [ ] `InitOptions.replay` typed: `{ enabled, sampleRate, captureOnError, maskAllInputs, blockSelectors, maxSessionMinutes }`; defaults all off / safe
+- [ ] `IReplayAdapter` interface with `start()`, `stop()`, `flush()`; default export is a no-op adapter that logs `replay disabled` in dev only
+- [ ] `sessionId` is exposed to the adapter (same ID used by `track()` and Phase 5 sessions)
+- [ ] No bundle-size impact (no rrweb import — adapter is a stub)
+- [ ] Unit test: passing `replay.enabled: true` with no-op adapter is a no-op, not a throw
+**Investigation questions:**
+- Should the adapter slot also be present in the .NET SDK for symmetry, or is replay strictly FE? (Recommended: FE-only; do not pollute `IAnalyticsService`.)
+
+### Issue 4.10 — SDK documentation + quickstarts
 **Description:** READMEs and 5-minute quickstarts for both SDKs. Include the migration-from-PostHog cheatsheet for SCH.
 **Acceptance criteria:**
 - [ ] FE quickstart <50 LOC
@@ -739,11 +570,12 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 - ACS vs. SendGrid — what does the company already use?
 
 ### Issue 8.5 — Retention policies
-**Description:** Per-app retention with scheduled archive/delete.
+**Description:** Per-app retention with scheduled archive/delete. Replay retention is defined here but enforced once Phase 9 ships.
 **Acceptance criteria:**
-- [ ] Per-app setting (default 90d events, 180d errors)
+- [ ] Per-app setting (default 90d events, 180d errors, **14d replay** when Phase 9 lands)
 - [ ] Worker runs nightly
 - [ ] Audit log row per run
+- [ ] Schema reserves a `ReplayRetentionDays` column on `AppEnvironments` (nullable until Phase 9)
 
 ### Issue 8.6 — RBAC
 **Description:** Admin / Developer / Viewer / AppOwner.
@@ -791,41 +623,137 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 ---
 
+## Phase 9 — Session Replay (rrweb)
+
+**Goal:** Add visual session replay via `rrweb`, scoped tightly: off by default, opt-in per app+env, masked aggressively, stored in Blob, retained briefly. Replay artifacts attach to the existing Phase 5 session timeline so debugging is "click the failure → watch the last 30 seconds."
+
+**Exit criteria:** SCH UAT can opt in for a single feature area, capture-on-error mode produces a viewable replay attached to a `frontend_exception` event, masking audit signed off, prod remains disabled.
+
+**Non-goals:** Always-on prod recording, full-session capture by default, replay of any surface flagged as PHI/PII.
+
+**Dependency approval gate (blocks all Phase 9 issues):**
+- [ ] `rrweb` + `rrweb-player` (MIT) approved as net-new dependencies
+- [ ] Privacy/compliance sign-off on the masking policy in `docs/privacy-rules.md`
+- [ ] Decision on Blob storage account topology (per-env vs. shared with lifecycle rules)
+
+### Issue 9.1 — Decide replay scope and defaults
+**Description:** Document what replay is and isn't for this platform. Lock defaults before any code lands.
+**Acceptance criteria:**
+- [ ] `docs/replay.md` covers: capture modes (always-on vs. capture-on-error vs. sampled), default = `captureOnError` with 30s circular buffer
+- [ ] Per-app+env opt-in flag (`AppEnvironments.ReplayEnabled` already exists from Phase 1.1 — wired up here)
+- [ ] Default `sampleRate` = 0; explicit per-app override required
+- [ ] Prod cannot enable replay without an `ApprovedForProductionAt` timestamp set by an admin
+
+### Issue 9.2 — Implement rrweb adapter in `observability-client-js`
+**Description:** Replace the no-op adapter from Issue 4.9 with an rrweb-backed implementation. Lazy-loaded — only fetched if `replay.enabled: true`.
+**Acceptance criteria:**
+- [ ] `replay/` submodule code-split; main bundle size unchanged when replay is off
+- [ ] `recorder.ts` calls `rrweb.record({ maskAllInputs, blockSelectors, ... })` from init config
+- [ ] `buffer.ts` chunks events every 5–10s; in `captureOnError` mode keeps a 30s ring buffer and only flushes on error
+- [ ] `transport.ts` gzip-compresses chunks (browser `CompressionStream`) and POSTs to `/api/ingest/replay/chunk` with `X-Session-Id` + `X-Chunk-Seq`
+- [ ] Recorder stops at `maxSessionMinutes` (default 30) to bound storage per session
+- [ ] `sessionId` matches the one used by `track()` — replay rows join cleanly to Phase 5 sessions
+
+### Issue 9.3 — Centralized masking policy
+**Description:** Masking config lives in one place per app, versioned, and shipped to the SDK at init. Selector lists for SCH must be reviewed by the same person who reviewed PostHog's privacy rules.
+**Acceptance criteria:**
+- [ ] `MaskingPolicies` table: Id, ApplicationId, EnvironmentId, Version, BlockSelectorsJson, MaskInputSelectorsJson, NeverRecordRoutesJson, CreatedAt, ApprovedByUserId
+- [ ] FE SDK fetches the active policy at init (cached, with version pin)
+- [ ] `MaskingPolicyVersion` stamped on every `SessionReplays` row so the policy in force at recording time is auditable
+- [ ] SCH initial policy seeds: mask all inputs, block `[data-phi]`, `.patient-name`, `.dob`, etc. (port from any existing SCH replay-disable hints)
+
+### Issue 9.4 — Domain models: `SessionReplays` + `SessionReplayChunks`
+**Description:** Metadata in SQL, bytes in Blob.
+**Acceptance criteria:**
+- [ ] `SessionReplays`: Id, SessionId (FK), ApplicationId, EnvironmentId, StartedAt, EndedAt, ChunkCount, TotalBytes, MaskingPolicyVersion, ReleaseSha, CaptureMode (`always_on` | `capture_on_error` | `sampled`)
+- [ ] `SessionReplayChunks`: Id, SessionReplayId, SeqNo, BlobUri, Bytes, ReceivedAt; unique index (SessionReplayId, SeqNo)
+- [ ] `Sessions` row gains `HasReplay` derived flag (or computed view) so dashboards can filter
+- [ ] EF migration is additive — Phase 1–8 schemas untouched
+
+### Issue 9.5 — `POST /api/ingest/replay/chunk`
+**Description:** Separate ingestion path. Public-key auth. Chunk written to Blob, metadata row inserted in SQL.
+**Acceptance criteria:**
+- [ ] Endpoint scoped to public_client keys; rejects server keys
+- [ ] Hard cap 1 MB/chunk (per-app overridable); 413 on oversize
+- [ ] Per-key replay-specific rate limit, separate from event ingestion (so replay storms can't starve analytics)
+- [ ] Rejects if `AppEnvironments.ReplayEnabled = false` for the resolved app+env (defense-in-depth — the SDK should never have started, but server enforces too)
+- [ ] Writes blob with content-addressed key: `{appSlug}/{env}/{sessionId}/{seqNo}.rrweb.gz`
+- [ ] Inserts `SessionReplayChunks` row; on duplicate (SessionReplayId, SeqNo) returns 200 idempotently
+**Investigation questions:**
+- Single Blob container per env vs. per-app? (Per-env with prefix-based RBAC is simpler, per-app is cleaner for retention rules.)
+- SAS-uploaded direct-to-Blob vs. proxy-through-API? Direct upload halves API CPU but complicates auth.
+
+### Issue 9.6 — Replay viewer in the dashboard
+**Description:** Add a player on the session timeline page (Phase 5.6). Streams chunks from Blob and feeds `rrweb-player`.
+**Acceptance criteria:**
+- [ ] Session timeline shows a "▶ Replay" affordance only when `HasReplay = true`
+- [ ] Player loads chunks lazily in seq order, decompresses client-side
+- [ ] Scrubber, speed control, and event markers from the timeline pinned to replay timestamps
+- [ ] Viewer fetches chunks via short-lived signed URLs from the API (never expose blob credentials)
+- [ ] Audit log row written when a replay is viewed (who, when, which session)
+
+### Issue 9.7 — Capture-on-error wiring
+**Description:** Make replay's killer feature trivial: any `captureException` or `captureFailedRequest` call optionally flushes the ring buffer.
+**Acceptance criteria:**
+- [ ] In `captureOnError` mode, error capture triggers `replay.flush()` before the event POST resolves
+- [ ] Replay metadata links back to the triggering error's `CorrelationId`
+- [ ] No replay flush if no error has occurred in the bounded session
+
+### Issue 9.8 — Replay retention worker
+**Description:** Specialize the Phase 8.5 retention job for replay. Replay TTL is much shorter than events.
+**Acceptance criteria:**
+- [ ] Default replay retention 14 days; per-app override
+- [ ] Worker deletes Blob chunks first, then `SessionReplayChunks` rows, then `SessionReplays` row
+- [ ] Failure to delete a blob is retried; never orphans bytes silently
+- [ ] Audit log row per run with byte-count freed
+
+### Issue 9.9 — RBAC for replay
+**Description:** Replay is the most sensitive surface in the platform. Lock it down hardest.
+**Acceptance criteria:**
+- [ ] New role `ReplayViewer` (separate from `Developer`); not granted by default to anyone
+- [ ] Even `Admin` does not get replay access without an explicit grant logged in `AuditLogs`
+- [ ] AppOwner of one app cannot view another app's replays (already enforced by Phase 8 RBAC; covered by an integration test)
+- [ ] Every replay view writes an audit row visible to compliance
+
+### Issue 9.10 — UAT soak + masking audit
+**Description:** Before any prod consideration, run replay in SCH UAT for 2 weeks, audit a stratified sample of recordings for any leaked PHI/PII.
+**Acceptance criteria:**
+- [ ] 2-week UAT soak with replay enabled on one feature area only
+- [ ] Sample of N recordings reviewed by privacy reviewer; sign-off committed
+- [ ] Zero leaked PHI/PII findings; any finding triggers masking policy bump and re-soak
+- [ ] Storage cost / chunk-count metrics captured for capacity planning before any prod ramp
+**Investigation questions:**
+- Sample size N for masking audit? (Suggest: all recordings in week 1, stratified sample in week 2.)
+- Do we need a "kill switch" config flag separate from `ReplayEnabled` to instantly disable replay across all apps in case of incident?
+
+---
+
 ## Cross-Cutting
 
 ### Privacy review gates
-- **Before Phase 1 ships:** privacy doc reviewed; allowlist enforced server-side.
 - **Before Phase 6 SCH UAT cutover:** sign-off that ported event catalog matches `POSTHOG_EVENT_CATALOG.md` exactly.
 - **Before Phase 6 SCH Prod cutover:** parity variance < threshold for 5 days; 48h UAT-on-adaptive-only with zero `SafetyViolations`.
-- **Before any visual replay (deferred beyond Phase 8):** separate privacy review; UAT-only; prod disabled by default; masking audit completed.
+- **Before Phase 9 (replay) entry:** rrweb dependency approved; masking policy reviewed; Blob storage topology decided; `docs/replay.md` committed.
+- **Before Phase 9 prod enablement (per-app):** 2-week UAT masking audit clean; `ReplayViewer` RBAC in place; replay-specific retention job verified; admin-set `ApprovedForProductionAt` recorded.
 
 ### Migration risks (carried from PostHog hardening backlog)
 - **Pre-release dependency:** SCH_API currently uses `PostHog.AspNetCore v2.5.0` pre-release. Plan removes it in Issue 6.8; until then, monitor for breaking changes.
-- **Replay safety:** UAT replay masking has not been audited. Keep replay disabled until Phase 8+ privacy review.
+- **Replay safety:** UAT replay masking has not been audited. Keep replay disabled until Phase 9 masking audit signs off; prod stays off-by-default per app even after sign-off.
 - **Role names:** confirm `auth_login_success` `roles` property contains generic role names only, not user-specific labels.
 - **Token threshold edge cases:** route normalization must not turn `posthog-500-test` into `posthog-{id}-test`. Port the validated SCH_UI threshold tuning verbatim.
 - **4xx tracking:** explicitly out of scope for Phase 1. Decision deferred to a future event-catalog update.
 
 ### Verification (end-to-end test plan)
-1. `docker-compose up` — backend + frontend + mssql come up clean.
-2. Use dashboard "Register App" (Phase 3+) to create a test app + Dev environment; copy public + server keys.
-3. Run SDK quickstarts; emit each Phase 1 event.
-4. Confirm dashboard: events under correct app/env, error fingerprints group, sessions render, no `SafetyViolations`.
-5. Submit unsafe event (`{ "email": "x@y.com" }`); confirm 422, `SafetyViolations` row written, no `Events` row.
-6. CI runs unit + integration tests on every PR.
-7. **Phase 6 specific:** dual-write composite produces matching counts in PostHog and adaptive-observability for 5 business days.
+1. CI runs unit + integration tests on every PR.
+2. **Phase 4 / 7 specific:** SDK quickstart emits each Phase 1 event; dashboard shows them under the correct app/env; submitting an unsafe event (`{ "email": "x@y.com" }`) returns 422 and writes a `SafetyViolations` row with no `Events` row.
+3. **Phase 6 specific:** dual-write composite produces matching counts in PostHog and adaptive-observability for 5 business days.
 
-### Open questions to resolve before Phase 0
-- GitHub org for the new repo (same as SCH?)
-- License / internal license header
-- IaC tool (Bicep vs. Terraform)
-- .NET version (8 LTS vs. 9; match SCH_API)
-- Identity source for Phase 8 RBAC
-- Mermaid vs. PNG for diagrams
-- Package manager (npm/pnpm/yarn; match SCH_UI)
-- Email provider for alerts (ACS vs. SendGrid)
-- Event-catalog source-of-truth (code vs. DB vs. markdown)
-- Whether to ship `IAnalyticsService` interface inside the .NET SDK or assume host provides it
+### Still-open cross-cutting questions
+- **IaC tool** (Bicep vs. Terraform vs. stay on `az` CLI) — needed before Phase 2 UAT/Prod provisioning.
+- **Identity source for Phase 8 RBAC** (Entra/AAD groups vs. local users).
+- **Email provider for alerts** (ACS vs. SendGrid) — Phase 8.
+- **Whether to ship `IAnalyticsService` inside the .NET SDK** vs. assume host provides it — Phase 4.
+- **Phase 9 replay:** Blob storage topology (per-env vs. per-app), direct-upload-via-SAS vs. proxy-through-API, default capture mode (recommended: `captureOnError`).
 
 ---
 
