@@ -11,4 +11,7 @@ public interface IIngestionStore
     Task AddEventAsync(EventRecord record, CancellationToken ct);
     Task UpsertErrorAsync(ErrorRecord record, CancellationToken ct);
     Task AddSafetyViolationAsync(SafetyViolation violation, CancellationToken ct);
+    Task UpsertSessionStartAsync(Session session, CancellationToken ct);
+    Task UpsertSessionEndAsync(Guid applicationId, Guid environmentId, string sessionId, DateTime endedAt, CancellationToken ct);
+    Task BumpSessionAsync(Guid applicationId, Guid environmentId, string sessionId, DateTime occurredAt, bool isError, CancellationToken ct);
 }

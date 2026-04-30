@@ -48,4 +48,66 @@ public sealed class IngestionStore : IIngestionStore
         _db.SafetyViolations.Add(violation);
         await _db.SaveChangesAsync(ct);
     }
+
+    public async Task UpsertSessionStartAsync(Session session, CancellationToken ct)
+    {
+        var existing = await _db.Sessions.FirstOrDefaultAsync(
+            s => s.ApplicationId == session.ApplicationId
+              && s.EnvironmentId == session.EnvironmentId
+              && s.SessionId == session.SessionId, ct);
+        if (existing is null)
+        {
+            _db.Sessions.Add(session);
+        }
+        else
+        {
+            // Idempotent re-start: take the earliest StartedAt and update DistinctId / release_sha if newer.
+            if (session.StartedAt < existing.StartedAt) existing.StartedAt = session.StartedAt;
+            if (!string.IsNullOrEmpty(session.DistinctId)) existing.DistinctId = session.DistinctId;
+            if (session.LastSeenAt > existing.LastSeenAt) existing.LastSeenAt = session.LastSeenAt;
+            if (!string.IsNullOrEmpty(session.ReleaseSha)) existing.ReleaseSha = session.ReleaseSha;
+        }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task UpsertSessionEndAsync(Guid applicationId, Guid environmentId, string sessionId, DateTime endedAt, CancellationToken ct)
+    {
+        var existing = await _db.Sessions.FirstOrDefaultAsync(
+            s => s.ApplicationId == applicationId
+              && s.EnvironmentId == environmentId
+              && s.SessionId == sessionId, ct);
+        if (existing is null)
+        {
+            // Idempotent: a `/end` without a prior `/start` still records a closing row so the timeline
+            // doesn't drop the bracket. Common in flaky-network reconnects.
+            _db.Sessions.Add(new Session
+            {
+                ApplicationId = applicationId,
+                EnvironmentId = environmentId,
+                SessionId = sessionId,
+                DistinctId = string.Empty,
+                StartedAt = endedAt,
+                EndedAt = endedAt,
+                LastSeenAt = endedAt,
+            });
+        }
+        else
+        {
+            existing.EndedAt = endedAt;
+            if (endedAt > existing.LastSeenAt) existing.LastSeenAt = endedAt;
+        }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task BumpSessionAsync(Guid applicationId, Guid environmentId, string sessionId, DateTime occurredAt, bool isError, CancellationToken ct)
+    {
+        var existing = await _db.Sessions.FirstOrDefaultAsync(
+            s => s.ApplicationId == applicationId
+              && s.EnvironmentId == environmentId
+              && s.SessionId == sessionId, ct);
+        if (existing is null) return; // session was never started; we don't fabricate one from event traffic
+        if (occurredAt > existing.LastSeenAt) existing.LastSeenAt = occurredAt;
+        if (isError) existing.HasError = true;
+        await _db.SaveChangesAsync(ct);
+    }
 }

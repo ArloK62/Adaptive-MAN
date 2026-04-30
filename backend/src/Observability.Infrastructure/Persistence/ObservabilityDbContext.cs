@@ -15,6 +15,7 @@ public class ObservabilityDbContext : DbContext
     public DbSet<EventRecord> Events => Set<EventRecord>();
     public DbSet<ErrorRecord> Errors => Set<ErrorRecord>();
     public DbSet<SafetyViolation> SafetyViolations => Set<SafetyViolation>();
+    public DbSet<Session> Sessions => Set<Session>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -92,6 +93,17 @@ public class ObservabilityDbContext : DbContext
             e.Property(x => x.RejectedField).HasMaxLength(128).IsRequired();
             e.Property(x => x.Reason).HasMaxLength(64).IsRequired();
             e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.CreatedAt });
+        });
+
+        b.Entity<Session>(e =>
+        {
+            e.ToTable("Sessions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.SessionId).HasMaxLength(64).IsRequired();
+            e.Property(x => x.DistinctId).HasMaxLength(128).IsRequired();
+            e.Property(x => x.ReleaseSha).HasMaxLength(64);
+            e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.SessionId }).IsUnique();
+            e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.LastSeenAt });
         });
     }
 }

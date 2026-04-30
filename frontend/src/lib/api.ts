@@ -72,6 +72,58 @@ export interface EventRowDto {
   properties_json: string;
 }
 
+export interface SessionRowDto {
+  id: number;
+  session_id: string;
+  distinct_id: string;
+  started_at: string;
+  ended_at: string | null;
+  last_seen_at: string;
+  has_error: boolean;
+  release_sha: string | null;
+}
+
+export type TimelineEntry =
+  | {
+      kind: 'event';
+      occurred_at: string;
+      id: number;
+      event_name: string;
+      normalized_route: string | null;
+      endpoint_group: string | null;
+      correlation_id: string | null;
+      properties: unknown;
+      is_api_failure: boolean;
+    }
+  | {
+      kind: 'error';
+      occurred_at: string;
+      id: number;
+      error_type: string;
+      exception_type: string | null;
+      endpoint_group: string | null;
+      http_status_code: number | null;
+      correlation_id: string | null;
+      fingerprint: string;
+      occurrence_count: number;
+      source: 'in_session' | 'cross_process';
+    };
+
+export interface TimelineDto {
+  session: {
+    session_id: string;
+    application_id: string;
+    environment_id: string;
+    distinct_id: string;
+    started_at: string;
+    ended_at: string | null;
+    last_seen_at: string;
+    has_error: boolean;
+    release_sha: string | null;
+  };
+  entries: TimelineEntry[];
+}
+
 export interface PagedResult<T> {
   total: number;
   page: number;
@@ -111,8 +163,13 @@ export const api = {
     request<PagedResult<ErrorRowDto>>(`/api/dashboard/errors${buildQuery(q as unknown as AnyQuery)}`),
   events: (q: DashboardQuery & PagingQuery & EventFilters) =>
     request<PagedResult<EventRowDto>>(`/api/dashboard/events${buildQuery(q as unknown as AnyQuery)}`),
-  sessions: (q: DashboardQuery & PagingQuery) =>
-    request<PagedResult<unknown> & { note?: string }>(`/api/dashboard/sessions${buildQuery(q as unknown as AnyQuery)}`),
+  sessions: (q: DashboardQuery & PagingQuery & { errors_only?: boolean }) =>
+    request<PagedResult<SessionRowDto>>(`/api/dashboard/sessions${buildQuery({
+      ...(q as unknown as AnyQuery),
+      errors_only: q.errors_only ? 'true' : undefined,
+    })}`),
+  sessionTimeline: (sessionId: string) =>
+    request<TimelineDto>(`/api/sessions/${encodeURIComponent(sessionId)}/timeline`),
 };
 
 export interface DashboardQuery {

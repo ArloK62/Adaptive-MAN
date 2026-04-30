@@ -5,6 +5,7 @@ import { HealthPage } from './pages/HealthPage';
 import { ErrorsPage } from './pages/ErrorsPage';
 import { EventsPage } from './pages/EventsPage';
 import { SessionsPage } from './pages/SessionsPage';
+import { SessionTimelinePage } from './pages/SessionTimelinePage';
 import { AdminAppsPage } from './pages/AdminAppsPage';
 
 function Layout() {
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="errors" element={<ErrorsPage />} />
         <Route path="events" element={<EventsPage />} />
         <Route path="sessions" element={<SessionsPage />} />
+        <Route path="sessions/:sessionId" element={<SessionTimelinePage />} />
         <Route path="admin/apps" element={<AdminAppsPage />} />
         <Route path="*" element={<Navigate to="/health" replace />} />
       </Route>

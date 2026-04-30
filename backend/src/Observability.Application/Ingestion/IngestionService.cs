@@ -75,6 +75,10 @@ public sealed class IngestionService : IIngestionService
         };
 
         await _store.AddEventAsync(record, ct);
+        if (!string.IsNullOrEmpty(request.SessionId))
+        {
+            await _store.BumpSessionAsync(context.ApplicationId, context.EnvironmentId, request.SessionId, record.OccurredAt, isError: false, ct);
+        }
         return new IngestionResult(IngestionOutcome.Accepted);
     }
 
@@ -148,6 +152,10 @@ public sealed class IngestionService : IIngestionService
         };
 
         await _store.UpsertErrorAsync(record, ct);
+        if (!string.IsNullOrEmpty(request.SessionId))
+        {
+            await _store.BumpSessionAsync(context.ApplicationId, context.EnvironmentId, request.SessionId, record.LastSeenAt, isError: true, ct);
+        }
         return new IngestionResult(IngestionOutcome.Accepted);
     }
 

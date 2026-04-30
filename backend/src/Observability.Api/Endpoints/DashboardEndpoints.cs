@@ -240,17 +240,47 @@ public static class DashboardEndpoints
     }
 
     /// <summary>
-    /// Phase 5 owns the Sessions table. Returns an empty page so the dashboard route renders cleanly today.
+    /// Phase 5: list sessions filtered by app + env + time range. Ordered by LastSeenAt desc.
     /// </summary>
-    private static IResult GetSessions(
+    private static async Task<IResult> GetSessions(
         [FromQuery(Name = "app")] Guid? appId,
-        [FromQuery(Name = "env")] Guid? envId)
+        [FromQuery(Name = "env")] Guid? envId,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        [FromQuery(Name = "errors_only")] bool? errorsOnly,
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
+        ObservabilityDbContext db,
+        CancellationToken ct)
     {
         if (appId is null || envId is null)
             return Results.BadRequest(new { error = "missing_filter", reason = "app and env are required." });
 
-        return Results.Ok(new { total = 0L, page = 0, page_size = 0, rows = Array.Empty<object>(),
-            note = "Sessions are tracked starting in Phase 5; this endpoint returns empty until then." });
+        var range = ResolveRange(from, to);
+        var (skip, take) = ResolvePaging(page, pageSize);
+
+        var q = db.Sessions.AsNoTracking()
+            .Where(s => s.ApplicationId == appId && s.EnvironmentId == envId
+                     && s.LastSeenAt >= range.From && s.LastSeenAt < range.To);
+        if (errorsOnly == true) q = q.Where(s => s.HasError);
+
+        var total = await q.LongCountAsync(ct);
+        var rows = await q.OrderByDescending(s => s.LastSeenAt)
+            .Skip(skip).Take(take)
+            .Select(s => new
+            {
+                id = s.Id,
+                session_id = s.SessionId,
+                distinct_id = s.DistinctId,
+                started_at = s.StartedAt,
+                ended_at = s.EndedAt,
+                last_seen_at = s.LastSeenAt,
+                has_error = s.HasError,
+                release_sha = s.ReleaseSha,
+            })
+            .ToListAsync(ct);
+
+        return Results.Ok(new { total, page = skip / take, page_size = take, rows });
     }
 
     private static (DateTime From, DateTime To) ResolveRange(DateTime? from, DateTime? to)
