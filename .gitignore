@@ -1,0 +1,47 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+.vs/
+.vscode/
+*.swp
+artifacts/
+TestResults/
+
+# Node
+node_modules/
+dist/
+build/
+.turbo/
+.next/
+.cache/
+coverage/
+*.log
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+appsettings.*.local.json
+*.pfx
+*.key
+secrets.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.iml
+
+# Docker
+.docker/
+
+# EF Core
+*.mdf
+*.ldf
+*.tsbuildinfo
