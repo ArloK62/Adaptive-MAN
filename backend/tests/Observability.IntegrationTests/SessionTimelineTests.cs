@@ -2,7 +2,10 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Observability.Api.Middleware;
+using Observability.Infrastructure.Persistence;
 using Xunit;
 
 namespace Observability.IntegrationTests;
@@ -123,5 +126,25 @@ public class SessionTimelineTests : IClassFixture<IngestionWebApplicationFactory
         var dashboard = _factory.CreateClient();
         var res = await dashboard.GetAsync("/api/sessions/does-not-exist/timeline");
         Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Orphan_session_end_is_dropped_silently()
+    {
+        await _factory.SeedAsync();
+        var publicClient = AuthClient(_factory.PublicKeyPlaintext);
+
+        // No /start was ever sent for this session id.
+        var endRes = await publicClient.PostAsJsonAsync("/api/ingest/sessions/end", new
+        {
+            session_id = "orphan-session-without-start",
+        });
+        Assert.Equal(HttpStatusCode.Accepted, endRes.StatusCode);
+
+        // Confirm no row was created — the dashboard list must not see a malformed session.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ObservabilityDbContext>();
+        var orphan = await db.Sessions.FirstOrDefaultAsync(s => s.SessionId == "orphan-session-without-start");
+        Assert.Null(orphan);
     }
 }

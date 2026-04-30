@@ -78,24 +78,14 @@ public sealed class IngestionStore : IIngestionStore
               && s.SessionId == sessionId, ct);
         if (existing is null)
         {
-            // Idempotent: a `/end` without a prior `/start` still records a closing row so the timeline
-            // doesn't drop the bracket. Common in flaky-network reconnects.
-            _db.Sessions.Add(new Session
-            {
-                ApplicationId = applicationId,
-                EnvironmentId = environmentId,
-                SessionId = sessionId,
-                DistinctId = string.Empty,
-                StartedAt = endedAt,
-                EndedAt = endedAt,
-                LastSeenAt = endedAt,
-            });
+            // Orphan /end (no prior /start): drop silently. Inserting a closing-only row with
+            // empty DistinctId pollutes the dashboard list with malformed sessions, and there's
+            // no bracket to preserve since /start never arrived. The endpoint still returns 202
+            // for idempotency.
+            return;
         }
-        else
-        {
-            existing.EndedAt = endedAt;
-            if (endedAt > existing.LastSeenAt) existing.LastSeenAt = endedAt;
-        }
+        existing.EndedAt = endedAt;
+        if (endedAt > existing.LastSeenAt) existing.LastSeenAt = endedAt;
         await _db.SaveChangesAsync(ct);
     }
 
