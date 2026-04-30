@@ -1,0 +1,45 @@
+name: sdks
+
+on:
+  pull_request:
+    paths:
+      - "packages/**"
+      - ".github/workflows/sdks.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/**"
+      - ".github/workflows/sdks.yml"
+
+jobs:
+  client-js:
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('packages/observability-client-js/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: packages/observability-client-js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: packages/observability-client-js/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test --if-present
+
+  client-dotnet:
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('packages/observability-client-dotnet/*.sln') != '' }}
+    defaults:
+      run:
+        working-directory: packages/observability-client-dotnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet restore
+      - run: dotnet build --configuration Release --no-restore
+      - run: dotnet test --configuration Release --no-build
