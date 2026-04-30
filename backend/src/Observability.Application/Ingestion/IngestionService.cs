@@ -148,8 +148,33 @@ public sealed class IngestionService : IIngestionService
         };
 
         await _store.UpsertErrorAsync(record, ct);
+
+        // Sidecar incident row for background_job_failed so the alert engine + dashboard can
+        // rate-limit and group on (JobName, ErrorType) without scanning the global Errors table.
+        if (!string.IsNullOrEmpty(jobName))
+        {
+            var bgFailure = new BackgroundJobFailure
+            {
+                ApplicationId = context.ApplicationId,
+                EnvironmentId = context.EnvironmentId,
+                JobName = jobName,
+                ErrorType = request.ErrorType,
+                Fingerprint = fingerprint,
+                ReleaseSha = releaseSha,
+                FirstSeenAt = record.FirstSeenAt,
+                LastSeenAt = record.LastSeenAt,
+            };
+            await _store.UpsertBackgroundJobFailureAsync(bgFailure, BackgroundJobDedupWindow, ct);
+        }
+
         return new IngestionResult(IngestionOutcome.Accepted);
     }
+
+    /// <summary>
+    /// Default dedup window for background_job_failed alerting suppression.
+    /// Mirrors the SDK-side default; per-app override is Phase 8.2.
+    /// </summary>
+    public static readonly TimeSpan BackgroundJobDedupWindow = TimeSpan.FromMinutes(15);
 
     private static string? TryGetString(IReadOnlyDictionary<string, JsonElement> props, string key) =>
         props.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

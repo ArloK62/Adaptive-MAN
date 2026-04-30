@@ -15,6 +15,7 @@ public class ObservabilityDbContext : DbContext
     public DbSet<EventRecord> Events => Set<EventRecord>();
     public DbSet<ErrorRecord> Errors => Set<ErrorRecord>();
     public DbSet<SafetyViolation> SafetyViolations => Set<SafetyViolation>();
+    public DbSet<BackgroundJobFailure> BackgroundJobFailures => Set<BackgroundJobFailure>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -92,6 +93,18 @@ public class ObservabilityDbContext : DbContext
             e.Property(x => x.RejectedField).HasMaxLength(128).IsRequired();
             e.Property(x => x.Reason).HasMaxLength(64).IsRequired();
             e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.CreatedAt });
+        });
+
+        b.Entity<BackgroundJobFailure>(e =>
+        {
+            e.ToTable("BackgroundJobFailures");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.JobName).HasMaxLength(128).IsRequired();
+            e.Property(x => x.ErrorType).HasMaxLength(128).IsRequired();
+            e.Property(x => x.Fingerprint).HasMaxLength(64).IsRequired();
+            e.Property(x => x.ReleaseSha).HasMaxLength(64);
+            e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.Fingerprint }).IsUnique();
+            e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.LastSeenAt });
         });
     }
 }

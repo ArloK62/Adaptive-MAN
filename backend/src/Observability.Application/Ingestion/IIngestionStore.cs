@@ -11,4 +11,5 @@ public interface IIngestionStore
     Task AddEventAsync(EventRecord record, CancellationToken ct);
     Task UpsertErrorAsync(ErrorRecord record, CancellationToken ct);
     Task AddSafetyViolationAsync(SafetyViolation violation, CancellationToken ct);
+    Task UpsertBackgroundJobFailureAsync(BackgroundJobFailure failure, TimeSpan dedupWindow, CancellationToken ct);
 }
