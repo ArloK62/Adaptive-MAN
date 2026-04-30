@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Observability.Application.Ingestion;
+using Observability.Infrastructure.Authentication;
 using Observability.Infrastructure.Persistence;
 
 namespace Observability.Infrastructure;
@@ -14,6 +16,17 @@ public static class DependencyInjection
 
         services.AddDbContext<ObservabilityDbContext>(options =>
             options.UseSqlServer(connectionString, sql => sql.EnableRetryOnFailure()));
+
+        services.Configure<ApiKeyHasherOptions>(opts =>
+        {
+            opts.Pepper = configuration["Observability:ApiKeyHashPepper"] ?? string.Empty;
+        });
+
+        services.AddSingleton<IApiKeyHasher, ApiKeyHasher>();
+        services.AddScoped<IApiKeyResolver, ApiKeyResolver>();
+        services.AddScoped<IIngestionStore, IngestionStore>();
+        services.AddSingleton<IPropertyAllowlistValidator, PropertyAllowlistValidator>();
+        services.AddScoped<IIngestionService, IngestionService>();
 
         return services;
     }
