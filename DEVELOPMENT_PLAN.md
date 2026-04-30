@@ -22,7 +22,9 @@ Custom event ingestion · Custom error ingestion · Strict privacy allowlists ·
 | 1 — Backend Ingestion MVP | **Done.** Removed from this doc; see `git log`. |
 | 2 — Azure Key Vault & Deployment | **Partial.** KV config provider, fail-fast validation, and setup docs shipped (was 2.2 + 2.5). Dev vault `AdaptiveToolsKeyVault` (centralus, RBAC) holds four placeholder secrets tagged `purpose=adaptive-observability`. Hosting (2.3) and DB-secret cutover (2.4) are open below; UAT/Prod vault provisioning (2.1 partial) is open below. |
 | 3 — React Dashboard MVP | **Done.** Removed from this doc; see `git log`. |
-| 4 – 9 | Open. Documented below. |
+| 4 — Client SDKs | **Partial.** Both SDKs scaffolded with the full Phase 1 surface and 33 passing tests; shipped on `phase-4/client-sdks`. Outstanding work documented below (SCH fixture port, session-bracket auto-call, RouteData path, per-app dedup window). |
+| 5 — Session Timeline | **Partial.** Sessions schema + ingest + derived timeline + cross-process correlation + UI shipped on `phase-5/session-timeline`; 31 backend tests including chunked-IN-list and orphan-`/end` regressions. Outstanding: 5.2 benchmark spike not run; SDK does not auto-bracket sessions (Issue 4.11); 5.5 end-to-end correlation-id verification owned by Phase 6.1. |
+| 6 – 9 | Open. Documented below. |
 
 ## Constraints
 
@@ -270,91 +272,58 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 **Exit criteria:** Both SDKs versioned and documented. A drop-in replacement PR in SCH (Phase 6) changes only imports, DI registration, and config — not call sites.
 
-### Issue 4.1 — `observability-client-js` core API
-**Description:** `init`, `identify`, `track`, `capturePageView`, `captureException`, `captureFailedRequest`. **Match the function signatures in `sch-ui/src/services/analytics.ts`** exactly.
+**Done in this phase already (on `phase-4/client-sdks`):**
+- 4.1 — `observability-client-js` core API: `init`, `identify`, `track`, `capturePageView`, `captureException`, `captureFailedRequest`. Compile-time event allowlist via TS unions, sessionStorage session id, no-op-if-not-initialized. **Decision:** rewrote from spec rather than copying `analytics.ts` so the SDK has zero SCH-internal dependencies.
+- 4.3 — Axios interceptor + native `fetch` wrapper. Opt-in.
+- 4.4 — React error boundary that captures `error_type` / `source` / `component_stack_depth` only.
+- 4.5 — Batched transport with size/interval flush, exponential backoff + jitter, all errors swallowed. Dev-only warnings gated by an `init({ debug })` flag.
+- 4.6 — `AdaptiveObservabilityService : IAnalyticsService`, `AddAdaptiveObservability(...)` DI extension, background `Channel<T>`, never throws into host. **Decision:** the SDK ships its own `IAnalyticsService` interface (under `Adaptive.ObservabilityClient`); SCH adopters delete `SCH.Core.Interfaces.IAnalyticsService` and update `using` statements.
+- 4.7 — Backend `RouteNormalizer.Normalize(path)` + `EndpointGroup(...)` + `NormalizeFromContext(HttpContext)`. **Caveat below: the `RouteData`/endpoint-template path was dropped in favor of `Request.Path` because endpoint-metadata reflection is fragile across MVC and Minimal APIs.**
+- 4.8 — `BackgroundJobFailures` sidecar table with `LastSuppressedAt` + window-aware upsert; integration test confirms 100 identical failures collapse to one incident with `count=100`. **Caveat below: window is currently a static 15-minute default; per-app override is deferred to Phase 8.2 hardening.**
+- 4.9 — Replay slot: `InitOptions.replay` shape, `IReplayAdapter` interface, default no-op adapter, no rrweb dependency. Unit test confirms `replay.enabled: true` with the no-op adapter is a no-op, not a throw.
+- 4.10 — SDK READMEs (`packages/observability-client-js/README.md`, `packages/observability-client-dotnet/README.md`) with under-50-LOC quickstarts; migration cheatsheet at `docs/migration/posthog-to-adaptive.md`.
+
+### Issue 4.2 — FE route normalization: validate against SCH fixture set
+
+**Status:** the rules + token-threshold tuning are ported and unit-tested against a small fixture set including the `posthog-500-test` edge case. Outstanding: re-run the same normalizer against the *actual* SCH_UI fixture set (lives in the SCH repo) before SCH cutover, since that set is the validated regression suite.
+
 **Acceptance criteria:**
-- [ ] API matches `analytics.ts`
-- [ ] Compile-time event allowlist via TS unions (preserve the existing safety net)
-- [ ] Anonymous session ID in `sessionStorage`
-- [ ] `identify(userId)` accepts only `string` — caller responsible for safety
-- [ ] No-op silently if `init` not called
+- [ ] SCH_UI route fixture set imported (vendored or test-only fetched) into `packages/observability-client-js/src/__tests__/`
+- [ ] All SCH fixtures pass against this normalizer with no diffs
+
+**Decisions needed:**
+- Vendor the fixture file into this repo, or run a one-off comparison from the SCH branch as a Phase 6 cutover prereq?
+
+### Issue 4.7 — `RouteData`-aware path normalization
+
+**Status:** path-based fallback is implemented (`RouteNormalizer.NormalizeFromContext` reads `Request.Path`). The `RouteData`/endpoint-template path stated in the original acceptance criteria was deliberately skipped because endpoint metadata APIs differ between MVC, Minimal APIs, and `IRouteDiagnosticsMetadata`, and getting it wrong silently breaks normalization without throwing.
+
+**Acceptance criteria:**
+- [ ] Decide whether the `RouteData` path is worth the surface-area cost (it primarily helps with MVC controllers that have catch-all parameters; Minimal APIs already produce `:id`-style normalization through plain path parsing)
+- [ ] If yes: add it with explicit MVC + Minimal-API integration tests so a regression is caught
+- [ ] Re-run against SCH_API route fixtures (same dependency as 4.2)
+
+### Issue 4.8 — Per-app BG dedup window
+
+**Status:** dedup table + window logic + 100-failure integration test are in place; window is a static 15-minute default in `IngestionService`. The original 4.8 acceptance criterion ("window configurable per-app") overlaps with Phase 8.2's "hardens (per-app override, audit of suppressed-vs-incident counts)." Proposed split: leave the static default in 4.8 as shipped, and explicitly own the per-app override in 8.2.
+
+**Acceptance criteria:**
+- [ ] Confirm split with the team; if 4.8 retains ownership, add a `BackgroundJobDedupWindow` column on `AppEnvironments` (nullable; falls back to static default) and thread it through the upsert
+- [ ] If 8.2 takes ownership, mark this issue closed and update the 8.2 description
+
+### Issue 4.11 — JS SDK auto-bracket sessions (Phase 5 integration gap)
+
+**Description:** The JS SDK creates a session id in `init()` and stamps it on every event, but it does not call `POST /api/ingest/sessions/start` automatically. The Phase 5 backend's `BumpSessionAsync` will not fabricate a `Sessions` row from event traffic (by design — see [`docs/architecture.md`](docs/architecture.md)), so a freshly-onboarded app's `Sessions` table stays empty and `/api/sessions/{sessionId}/timeline` returns 404. End-to-end the platform has a hole until this lands.
+
+**Acceptance criteria:**
+- [ ] On the first `track()` / `capturePageView()` / `captureException()` after `init()`, the SDK fires-and-forgets `POST /api/ingest/sessions/start` with `{ session_id, distinct_id, release_sha }`. Subsequent events bump `LastSeenAt` server-side as already implemented.
+- [ ] On `beforeunload` (browser) and `shutdown()` (programmatic), the SDK fires `POST /api/ingest/sessions/end`. Use `navigator.sendBeacon` for the unload path so it survives navigation.
+- [ ] Idempotent: a second `start` call within the same session must not duplicate (server-side upsert already handles this, but the SDK shouldn't spam either).
+- [ ] Optional `init({ trackSessions: false })` to disable for hosts that bracket sessions manually.
+- [ ] Integration test that runs the JS SDK against the real ingestion API and confirms a `Sessions` row appears with `started_at` and `last_seen_at` populated.
+
 **Investigation questions:**
-- Pull `analytics.ts` into the SDK as starting code, or rewrite from spec?
-
-### Issue 4.2 — Route normalization utility (FE)
-**Description:** Port `sch-ui/src/utils/routeUtils.ts` rules. Preserve the token threshold tuning that's already validated.
-**Acceptance criteria:**
-- [ ] Replaces numeric segments, UUIDs, ULIDs, tokens
-- [ ] Drops query strings entirely
-- [ ] Maps to feature areas
-- [ ] Unit-tested against the SCH route fixture set + the `posthog-500-test` edge case
-
-### Issue 4.3 — Axios + fetch interceptors
-**Description:** Port the SCH_UI axios interceptor pattern from `apiClient.ts`.
-**Acceptance criteria:**
-- [ ] Axios module + native fetch wrapper
-- [ ] Captures status_code, correlation_id, endpoint_group, method, is_network_error
-- [ ] Documented usage; opt-in (no global monkey-patching)
-
-### Issue 4.4 — React error boundary helper
-**Description:** Port the SCH_UI `ErrorBoundary` pattern. **Never** sends message/stack/component-stack text.
-**Acceptance criteria:**
-- [ ] Captures `error_type`, `source`, `component_stack_depth` only
-- [ ] Configurable fallback UI
-- [ ] Never sends `error.message`, `error.stack`, React `componentStack` string
-
-### Issue 4.5 — Batched send + retry
-**Description:** Buffer in memory, flush on interval/size, exponential backoff with jitter, never throw.
-**Acceptance criteria:**
-- [ ] Configurable batch size + flush interval
-- [ ] Exponential backoff with jitter on 5xx/network
-- [ ] Drop after max retries; `console.warn` in dev only
-- [ ] All SDK errors swallowed
-
-### Issue 4.6 — `observability-client-dotnet`: implement `IAnalyticsService`
-**Description:** **The .NET SDK's primary export must be a class implementing SCH's `IAnalyticsService` interface** (Capture, CaptureError, Shutdown). Copy the interface contract verbatim.
-**Acceptance criteria:**
-- [ ] `AdaptiveObservabilityService : IAnalyticsService`
-- [ ] DI registration: `services.AddAdaptiveObservability(opts => ...)`
-- [ ] `AnalyticsOptions`-shape config (Enabled, HostUrl, ApiKey, Environment, ReleaseSha)
-- [ ] Async, non-blocking (background channel)
-- [ ] Never throws into host app
-**Investigation questions:**
-- Ship the `IAnalyticsService` interface inside the SDK package, or assume the host app provides it?
-
-### Issue 4.7 — Backend route normalization (.NET)
-**Description:** Port the rules from `AnalyticsIdentity.cs`.
-**Acceptance criteria:**
-- [ ] Uses `RouteData` when available
-- [ ] Falls back to regex normalization
-- [ ] Unit-tested against SCH_API route fixtures
-
-### Issue 4.8 — BG job failure dedup (server-side)
-**Description:** **Resolves the deferred PostHog hardening item.** Suppress identical (job_name + error_type) failures within 15–30 min window. Server-side is canonical; SDK can also do best-effort client-side.
-**Acceptance criteria:**
-- [ ] `BackgroundJobFailures` table (Id, ApplicationId, EnvironmentId, JobName, ErrorType, Fingerprint, OccurrenceCount, FirstSeenAt, LastSeenAt, LastSuppressedAt, ReleaseSha)
-- [ ] Window configurable per-app (default 15 min)
-- [ ] `LastSuppressedAt` tracked
-- [ ] Test: 100 identical failures within 5 min produce one incident with count=100
-
-### Issue 4.9 — Reserve replay slot in `observability-client-js` (no rrweb yet)
-**Description:** Define the public `init({ replay })` config shape and a no-op `replay` adapter interface so Phase 9 can drop in an rrweb implementation without changing call sites or breaking SemVer. **No rrweb dependency is added in this phase.**
-**Acceptance criteria:**
-- [ ] `InitOptions.replay` typed: `{ enabled, sampleRate, captureOnError, maskAllInputs, blockSelectors, maxSessionMinutes }`; defaults all off / safe
-- [ ] `IReplayAdapter` interface with `start()`, `stop()`, `flush()`; default export is a no-op adapter that logs `replay disabled` in dev only
-- [ ] `sessionId` is exposed to the adapter (same ID used by `track()` and Phase 5 sessions)
-- [ ] No bundle-size impact (no rrweb import — adapter is a stub)
-- [ ] Unit test: passing `replay.enabled: true` with no-op adapter is a no-op, not a throw
-**Investigation questions:**
-- Should the adapter slot also be present in the .NET SDK for symmetry, or is replay strictly FE? (Recommended: FE-only; do not pollute `IAnalyticsService`.)
-
-### Issue 4.10 — SDK documentation + quickstarts
-**Description:** READMEs and 5-minute quickstarts for both SDKs. Include the migration-from-PostHog cheatsheet for SCH.
-**Acceptance criteria:**
-- [ ] FE quickstart <50 LOC
-- [ ] BE quickstart <50 LOC
-- [ ] Both link to `docs/privacy-rules.md`
-- [ ] PostHog→adaptive migration cheatsheet (import swap + DI swap)
+- Should the .NET SDK also bracket sessions for server-rendered apps, or is session bracketing strictly a FE concern? (Leaning FE-only; server-side telemetry uses `system:*` distinct ids and rarely benefits from session timelines.)
 
 ---
 
@@ -364,47 +333,27 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 **Exit criteria:** Clicking a session shows an ordered timeline including correlated backend errors.
 
-### Issue 5.1 — `Sessions` + `SessionEvents` tables
-**Description:** Sessions persisted on `session_started`. Materialized vs. derived timeline decided in 5.2.
-**Acceptance criteria:**
-- [ ] Tables match the Sessions model in this plan (Id, ApplicationId, EnvironmentId, SessionId, DistinctId, StartedAt, EndedAt, LastSeenAt, HasError, ReleaseSha)
-- [ ] Indexes: (SessionId, OccurredAt)
+**Done in this phase already (on `phase-5/session-timeline`):**
+- 5.1 — `Sessions` table with `(ApplicationId, EnvironmentId, SessionId)` unique index and `(LastSeenAt)` index. **Decision (see 5.2 below):** no `SessionEvents` materialized table — timeline is derived at query time from `Events` + `Errors`.
+- 5.3 — `POST /api/ingest/sessions/start` and `/end` under the api-key-protected ingest group; idempotent. A duplicate `/start` updates the existing row; an orphan `/end` (no prior `/start`) is dropped silently and the endpoint still returns 202 — previously inserted a malformed closing-only row.
+- 5.4 — `GET /api/sessions/{sessionId}/timeline` returns ordered entries tagged `event` | `error`; `is_api_failure` boolean on event entries flags `api_request_failed`. Each entry carries its `correlation_id`. The cross-process error join chunks correlation ids in batches of 1,000 to stay under SQL Server's ~2,100-parameter IN-clause limit, with a regression test that exercises the chunked path.
+- 5.5 — Cross-process correlation: backend errors that share a `CorrelationId` with any event in the session surface inline, tagged `source: "cross_process"`. The session row stamps `HasError = true` whenever any error ingestion arrives with a session id.
+- 5.6 — Session timeline UI: vertical timeline with type-coded markers (event / api failure / FE error / BE cross-process error), errors-only toggle, sticky details drawer with raw JSON.
 
-### Issue 5.2 — Decide: derived vs. materialized timeline
-**Description:** Spike both against synthetic 1M-event dataset.
-**Acceptance criteria:**
-- [ ] Spike PR with both implementations
-- [ ] Latency + storage measurements
-- [ ] Decision in `docs/architecture.md`
+### Issue 5.2 — Spike PR for derived vs materialized
 
-### Issue 5.3 — `POST /api/ingest/sessions/start` + `/end`
-**Description:** FE SDK brackets a session.
-**Acceptance criteria:**
-- [ ] Start creates Sessions row
-- [ ] End updates `EndedAt`
-- [ ] Idempotent
+**Status:** the *decision* is recorded in [`docs/architecture.md`](docs/architecture.md) (derived for MVP, revisit when per-session entry counts push past ~10k). The *spike PR with measured numbers against a 1M-event dataset* the original criterion asked for was not produced; the argument is from index coverage and expected per-session entry counts, not from benchmarks.
 
-### Issue 5.4 — `GET /api/sessions/{sessionId}/timeline`
-**Description:** Ordered timeline of events + errors + API failures.
 **Acceptance criteria:**
-- [ ] Sorted by `OccurredAt`
-- [ ] Each entry tagged (`event` | `error` | `api_failure`)
-- [ ] Includes correlation IDs
+- [ ] (Optional, defer to Phase 8 perf review) Run a benchmark spike with seeded synthetic data and record the latency + storage delta in `docs/perf.md`
+- [ ] Confirm the derived approach holds at ingestion volumes from real onboarded apps
 
-### Issue 5.5 — Cross-process correlation
-**Description:** Backend errors with the same `CorrelationId` as a FE `api_request_failed` event surface together.
-**Acceptance criteria:**
-- [ ] Backend errors joined to originating FE event by `CorrelationId`
-- [ ] Timeline UI shows BE error inline under FE failure
-**Investigation questions:**
-- Confirm the correlation_id from SCH_API is a true request trace ID end-to-end (deferred PostHog risk).
+### Issue 5.5 — End-to-end correlation id propagation (cross-link to Phase 6)
 
-### Issue 5.6 — Session timeline UI
-**Description:** Vertical timeline rendering; type icons; "errors only" filter.
+**Status:** the join works correctly when both processes set the same `X-Correlation-Id`. SCH currently propagates correlation ids end-to-end *in PostHog code* but this has not been independently verified for the new platform's ingestion path. Already listed as a Phase 6.1 prereq; cross-linked here so the Phase 5 surface flags it.
+
 **Acceptance criteria:**
-- [ ] Renders an ordered list (session_started → page_viewed → api_request_failed → frontend_exception → session_ended)
-- [ ] Click → details drawer
-- [ ] "Errors only" toggle
+- [ ] (Owned by Phase 6.1) Trace a single SCH UAT request from FE → BE → ingestion and confirm the same correlation id lands on both the FE `api_request_failed` event and the BE `server_error_occurred` error.
 
 ---
 
@@ -752,7 +701,7 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 - **IaC tool** (Bicep vs. Terraform vs. stay on `az` CLI) — needed before Phase 2 UAT/Prod provisioning.
 - **Identity source for Phase 8 RBAC** (Entra/AAD groups vs. local users).
 - **Email provider for alerts** (ACS vs. SendGrid) — Phase 8.
-- **Whether to ship `IAnalyticsService` inside the .NET SDK** vs. assume host provides it — Phase 4.
+- **EF migration timing.** Phase 1 ships `EnsureCreatedAsync` for dev. Phase 4 + 5 added `BackgroundJobFailures` and `Sessions`, growing the schema. Phase 2.4 already owns the `migrations add Initial` + switch to `MigrateAsync` cutover; flagged here so the surface area is visible when that work runs.
 - **Phase 9 replay:** Blob storage topology (per-env vs. per-app), direct-upload-via-SAS vs. proxy-through-API, default capture mode (recommended: `captureOnError`).
 
 ---

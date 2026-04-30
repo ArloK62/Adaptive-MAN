@@ -80,4 +80,56 @@ public sealed class IngestionStore : IIngestionStore
 
         await _db.SaveChangesAsync(ct);
     }
+
+    public async Task UpsertSessionStartAsync(Session session, CancellationToken ct)
+    {
+        var existing = await _db.Sessions.FirstOrDefaultAsync(
+            s => s.ApplicationId == session.ApplicationId
+              && s.EnvironmentId == session.EnvironmentId
+              && s.SessionId == session.SessionId, ct);
+        if (existing is null)
+        {
+            _db.Sessions.Add(session);
+        }
+        else
+        {
+            // Idempotent re-start: take the earliest StartedAt and update DistinctId / release_sha if newer.
+            if (session.StartedAt < existing.StartedAt) existing.StartedAt = session.StartedAt;
+            if (!string.IsNullOrEmpty(session.DistinctId)) existing.DistinctId = session.DistinctId;
+            if (session.LastSeenAt > existing.LastSeenAt) existing.LastSeenAt = session.LastSeenAt;
+            if (!string.IsNullOrEmpty(session.ReleaseSha)) existing.ReleaseSha = session.ReleaseSha;
+        }
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task UpsertSessionEndAsync(Guid applicationId, Guid environmentId, string sessionId, DateTime endedAt, CancellationToken ct)
+    {
+        var existing = await _db.Sessions.FirstOrDefaultAsync(
+            s => s.ApplicationId == applicationId
+              && s.EnvironmentId == environmentId
+              && s.SessionId == sessionId, ct);
+        if (existing is null)
+        {
+            // Orphan /end (no prior /start): drop silently. Inserting a closing-only row with
+            // empty DistinctId pollutes the dashboard list with malformed sessions, and there's
+            // no bracket to preserve since /start never arrived. The endpoint still returns 202
+            // for idempotency.
+            return;
+        }
+        existing.EndedAt = endedAt;
+        if (endedAt > existing.LastSeenAt) existing.LastSeenAt = endedAt;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task BumpSessionAsync(Guid applicationId, Guid environmentId, string sessionId, DateTime occurredAt, bool isError, CancellationToken ct)
+    {
+        var existing = await _db.Sessions.FirstOrDefaultAsync(
+            s => s.ApplicationId == applicationId
+              && s.EnvironmentId == environmentId
+              && s.SessionId == sessionId, ct);
+        if (existing is null) return; // session was never started; we don't fabricate one from event traffic
+        if (occurredAt > existing.LastSeenAt) existing.LastSeenAt = occurredAt;
+        if (isError) existing.HasError = true;
+        await _db.SaveChangesAsync(ct);
+    }
 }

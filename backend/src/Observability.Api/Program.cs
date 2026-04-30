@@ -58,6 +58,8 @@ app.MapDashboardEndpoints();
 
 var ingest = app.MapGroup("/api/ingest").AddApiKeyAuth();
 ingest.MapIngestionEndpoints();
+ingest.MapSessionIngestEndpoints();
+app.MapSessionReadEndpoints();
 
 if (app.Environment.IsDevelopment())
 {

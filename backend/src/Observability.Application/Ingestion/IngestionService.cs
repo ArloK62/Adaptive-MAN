@@ -75,6 +75,10 @@ public sealed class IngestionService : IIngestionService
         };
 
         await _store.AddEventAsync(record, ct);
+        if (!string.IsNullOrEmpty(request.SessionId))
+        {
+            await _store.BumpSessionAsync(context.ApplicationId, context.EnvironmentId, request.SessionId, record.OccurredAt, isError: false, ct);
+        }
         return new IngestionResult(IngestionOutcome.Accepted);
     }
 
@@ -151,6 +155,8 @@ public sealed class IngestionService : IIngestionService
 
         // Sidecar incident row for background_job_failed so the alert engine + dashboard can
         // rate-limit and group on (JobName, ErrorType) without scanning the global Errors table.
+        // Disjoint from the session bump below: BG-job failures use system:* distinct ids and
+        // never carry a session_id, while FE/server errors with session_id never have a job_name.
         if (!string.IsNullOrEmpty(jobName))
         {
             var bgFailure = new BackgroundJobFailure
@@ -165,6 +171,11 @@ public sealed class IngestionService : IIngestionService
                 LastSeenAt = record.LastSeenAt,
             };
             await _store.UpsertBackgroundJobFailureAsync(bgFailure, BackgroundJobDedupWindow, ct);
+        }
+
+        if (!string.IsNullOrEmpty(request.SessionId))
+        {
+            await _store.BumpSessionAsync(context.ApplicationId, context.EnvironmentId, request.SessionId, record.LastSeenAt, isError: true, ct);
         }
 
         return new IngestionResult(IngestionOutcome.Accepted);

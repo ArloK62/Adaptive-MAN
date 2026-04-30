@@ -16,6 +16,7 @@ public class ObservabilityDbContext : DbContext
     public DbSet<ErrorRecord> Errors => Set<ErrorRecord>();
     public DbSet<SafetyViolation> SafetyViolations => Set<SafetyViolation>();
     public DbSet<BackgroundJobFailure> BackgroundJobFailures => Set<BackgroundJobFailure>();
+    public DbSet<Session> Sessions => Set<Session>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -104,6 +105,17 @@ public class ObservabilityDbContext : DbContext
             e.Property(x => x.Fingerprint).HasMaxLength(64).IsRequired();
             e.Property(x => x.ReleaseSha).HasMaxLength(64);
             e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.Fingerprint }).IsUnique();
+            e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.LastSeenAt });
+        });
+
+        b.Entity<Session>(e =>
+        {
+            e.ToTable("Sessions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.SessionId).HasMaxLength(64).IsRequired();
+            e.Property(x => x.DistinctId).HasMaxLength(128).IsRequired();
+            e.Property(x => x.ReleaseSha).HasMaxLength(64);
+            e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.SessionId }).IsUnique();
             e.HasIndex(x => new { x.ApplicationId, x.EnvironmentId, x.LastSeenAt });
         });
     }

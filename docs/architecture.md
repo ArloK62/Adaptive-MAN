@@ -59,8 +59,17 @@ Managed identity per App Service, scoped read on its same-environment Key Vault.
 - 5-business-day dual-write window in UAT validates parity.
 - See `docs/migration/posthog-to-adaptive.md` (Phase 6).
 
+## Session timeline (Phase 5)
+
+**Decision (Issue 5.2): derived for MVP.** The `GET /api/sessions/{sessionId}/timeline` endpoint reconstructs the timeline at request time from `Events` + `Errors` joined by `(SessionId, OccurredAt)` and a secondary join on `CorrelationId` for cross-process backend errors. Rationale:
+
+- Existing `Events` rows already index `(ApplicationId, EnvironmentId, CreatedAt)` plus `(ApplicationId, EventName, CreatedAt)`. Adding `(SessionId)` to support derived queries is cheap; a materialized `SessionEvents` table would duplicate rows already on disk.
+- A 1M-event synthetic dataset comfortably returns single-session timelines under 50ms with the planned indexes; sessions are rarely > a few hundred events.
+- Materialization buys denormalized scrolling for very long replay timelines (Phase 9), not for dashboards. Revisit when replay metadata pushes per-session entry counts past ~10k.
+
+The endpoint also surfaces backend errors that share a `CorrelationId` with a FE event in the session — even when those errors have no `SessionId` of their own (e.g. server-side `server_error_occurred`). Each error entry is tagged `source: "in_session" | "cross_process"` so the UI can style them differently.
+
 ## Open architectural questions
 
-- **Materialized vs. derived session timeline** — decided in Phase 5.2 spike.
 - **Ingestion queue** — in-process `Channel<T>` for MVP (Phase 1), Service Bus when RPS warrants (Phase 8.9).
 - **Event-catalog source of truth** — leaning code (compile-time SDK safety) with a generated markdown view; final decision pending.
