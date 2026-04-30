@@ -1,0 +1,20 @@
+namespace Adaptive.ObservabilityClient;
+
+/// <summary>
+/// Mirrors SCH's existing <c>AnalyticsOptions</c> shape so a port is a config-section rename.
+/// </summary>
+public sealed class AdaptiveObservabilityOptions
+{
+    public bool Enabled { get; set; } = true;
+    public string HostUrl { get; set; } = string.Empty;
+    public string ApiKey { get; set; } = string.Empty;
+    public string Environment { get; set; } = "Development";
+    public string? ReleaseSha { get; set; }
+    public int BatchSize { get; set; } = 50;
+    public TimeSpan FlushInterval { get; set; } = TimeSpan.FromSeconds(5);
+    public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    public int MaxRetries { get; set; } = 3;
+
+    /// <summary>Background-job dedup window; suppresses identical (job_name, error_type) failures.</summary>
+    public TimeSpan BackgroundJobDedupWindow { get; set; } = TimeSpan.FromMinutes(15);
+}

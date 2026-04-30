@@ -49,6 +49,38 @@ public sealed class IngestionStore : IIngestionStore
         await _db.SaveChangesAsync(ct);
     }
 
+    public async Task UpsertBackgroundJobFailureAsync(BackgroundJobFailure failure, TimeSpan dedupWindow, CancellationToken ct)
+    {
+        var existing = await _db.BackgroundJobFailures
+            .FirstOrDefaultAsync(
+                f => f.ApplicationId == failure.ApplicationId
+                  && f.EnvironmentId == failure.EnvironmentId
+                  && f.Fingerprint == failure.Fingerprint,
+                ct);
+
+        if (existing is null)
+        {
+            _db.BackgroundJobFailures.Add(failure);
+        }
+        else
+        {
+            existing.OccurrenceCount++;
+            // Within the dedup window, the duplicate is "suppressed" from the alerting POV but
+            // still counted. The window is the alert dampener, not a counter dampener.
+            if (failure.LastSeenAt - existing.LastSeenAt < dedupWindow)
+            {
+                existing.LastSuppressedAt = failure.LastSeenAt;
+            }
+            existing.LastSeenAt = failure.LastSeenAt;
+            if (!string.IsNullOrEmpty(failure.ReleaseSha))
+            {
+                existing.ReleaseSha = failure.ReleaseSha;
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     public async Task UpsertSessionStartAsync(Session session, CancellationToken ct)
     {
         var existing = await _db.Sessions.FirstOrDefaultAsync(
