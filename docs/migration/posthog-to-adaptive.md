@@ -2,7 +2,9 @@
 
 > Audience: SCH_UI / SCH_API engineers performing the Phase 6 cutover. Other apps onboarding for the first time should read [`docs/onboarding-guide.md`](../onboarding-guide.md) instead.
 
-The new SDKs preserve the PostHog Phase 1 contract verbatim. Migration is **import + DI swap** — no event names, identity rules, or call sites change.
+The new SDKs preserve the PostHog Phase 1 contract verbatim. Migration is **import + DI swap** — no event names, identity rules, or call-site *behavior* change.
+
+> **Caveat for SCH adopters:** SCH call sites currently `using SCH.Core.Interfaces;` to pull in the existing `IAnalyticsService`. After cutover those `using` lines need to point at `Adaptive.ObservabilityClient` since the SDK ships its own copy of the interface. This is mechanical — one find-and-replace across the SCH solution — but call-site files *are* touched. The DI registration itself (in `Program.cs`) is the only logic change.
 
 ## SCH_UI
 
