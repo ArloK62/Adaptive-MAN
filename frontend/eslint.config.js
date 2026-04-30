@@ -17,6 +17,10 @@ const browserGlobals = {
   localStorage: 'readonly',
   sessionStorage: 'readonly',
   HTMLElement: 'readonly',
+  URL: 'readonly',
+  URLSearchParams: 'readonly',
+  Blob: 'readonly',
+  RequestInit: 'readonly',
 };
 
 export default [
@@ -38,6 +42,11 @@ export default [
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': 'warn',
+      // The type checker handles unused vars; the JS rule misfires on TS type signatures.
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // jsx: react-jsx — React identifier is not used; types come from 'react'.
+      'no-undef': 'off',
     },
   },
 ];
