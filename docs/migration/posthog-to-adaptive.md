@@ -1,16 +1,79 @@
-# Migration: PostHog → adaptive-observability
+# PostHog → Adaptive Observability migration cheatsheet
 
-Phase 6 work. Placeholder. The migration strategy is summarized in [DEVELOPMENT_PLAN.md §Phase 6](../../DEVELOPMENT_PLAN.md).
+> Audience: SCH_UI / SCH_API engineers performing the Phase 6 cutover. Other apps onboarding for the first time should read [`docs/onboarding-guide.md`](../onboarding-guide.md) instead.
 
-## Strategy
+The new SDKs preserve the PostHog Phase 1 contract verbatim. Migration is **import + DI swap** — no event names, identity rules, or call sites change.
 
-1. Implement `IAnalyticsService` against the new platform in `observability-client-dotnet`.
-2. Register both PostHog and adaptive-observability as a composite `IAnalyticsService` in SCH_API UAT for a 5-business-day dual-write window.
-3. Compare counts daily; require <1% variance per event type for 5 consecutive days.
-4. Flip composite to adaptive-only in UAT, soak 48 hours with zero `SafetyViolations`.
-5. Repeat in Prod.
-6. Remove `PostHog.AspNetCore` and `posthog-js` after 1 week of stable Prod traffic.
+## SCH_UI
+
+```diff
+  // src/main.tsx
+- import posthog from "posthog-js";
+- posthog.init(import.meta.env.VITE_POSTHOG_KEY, { api_host: import.meta.env.VITE_POSTHOG_HOST, autocapture: false, capture_pageview: false });
++ import * as observability from "@adaptive/observability-client-js";
++ observability.init({ ingestUrl: import.meta.env.VITE_OBSERVABILITY_URL, apiKey: import.meta.env.VITE_OBSERVABILITY_KEY });
+```
+
+```diff
+  // src/services/analytics.ts (the wrapper stays — only its transport changes)
+- posthog.capture(event, properties);
++ observability.track(event, properties);
+- posthog.identify(String(userId));
++ observability.identify(String(userId));
+- posthog.reset();
++ observability.reset();
+```
+
+```diff
+  // src/services/apiClient.ts
+- // bespoke axios interceptor that calls posthog.capture("api_request_failed", ...)
++ import { attachAxiosInterceptor } from "@adaptive/observability-client-js/axios";
++ attachAxiosInterceptor(api);
+```
+
+```diff
+  // src/components/common/ErrorBoundary.tsx
+- // bespoke ErrorBoundary that calls posthog.capture("frontend_exception", ...)
++ import { ObservabilityErrorBoundary } from "@adaptive/observability-client-js/react";
++ // wrap usage points with <ObservabilityErrorBoundary fallback={...}>
+```
+
+Env vars to swap:
+- `VITE_POSTHOG_KEY` → `VITE_OBSERVABILITY_KEY`
+- `VITE_POSTHOG_HOST` → `VITE_OBSERVABILITY_URL`
+
+## SCH_API
+
+```diff
+  // Program.cs
+- builder.Services.Configure<AnalyticsOptions>(builder.Configuration.GetSection("PostHog"));
+- builder.Services.AddSingleton<IAnalyticsService, PostHogService>();
++ builder.Services.AddAdaptiveObservability(builder.Configuration.GetSection("AdaptiveObservability"));
+```
+
+```diff
+  // .csproj
+- <PackageReference Include="PostHog.AspNetCore" Version="2.5.0-pre" />
++ <PackageReference Include="Adaptive.ObservabilityClient" Version="0.1.0" />
+```
+
+`appsettings.json`: rename the `PostHog` section to `AdaptiveObservability`. Field names match (`Enabled`, `HostUrl`, `ApiKey`, `Environment`, `ReleaseSha`).
+
+`GlobalExceptionMiddleware.cs`, `IAnalyticsService` consumers in background services, and all call sites do **not** change — they go through the interface.
+
+## Dual-write window (Phase 6.6)
+
+For the 5-business-day UAT parity window, register a composite implementation in SCH (kept SCH-side, not in the SDK) that fans out to both PostHog and Adaptive. After variance drops below threshold, swap the composite registration to Adaptive-only and remove the PostHog registration in the same PR. Phase 6.8 removes the package reference and FE library.
+
+## Verification
+
+After the swap:
+
+1. CI: SCH unit + integration tests pass unchanged (the interface contract is preserved).
+2. UAT: every Phase 1 event from `POSTHOG_EVENT_CATALOG.md` appears in the Adaptive dashboard under the SCH app + UAT environment.
+3. UAT: `SafetyViolations` table is empty for the SCH app for 48h after Adaptive-only.
+4. Send a deliberate `{ "email": "x@y.com" }` from a dev smoke endpoint — confirm it returns 422 and writes a `SafetyViolations` row with **no** `Events` row.
 
 ## Cutover prerequisites
 
-See Issue 6.1. Deferred PostHog hardening items must land before/alongside cutover.
+See [`DEVELOPMENT_PLAN.md` Issue 6.1](../../DEVELOPMENT_PLAN.md). Deferred PostHog hardening items (BG job dedup cooldown, `release_sha` in deployed envs, dev endpoint lockdown, role-name audit, end-to-end correlation ID, `.env.example` update) must land before/alongside cutover.
