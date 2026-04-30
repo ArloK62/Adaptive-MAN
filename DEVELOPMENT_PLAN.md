@@ -23,7 +23,7 @@ Custom event ingestion · Custom error ingestion · Strict privacy allowlists ·
 | 2 — Azure Key Vault & Deployment | **Partial.** KV config provider, fail-fast validation, and setup docs shipped (was 2.2 + 2.5). Dev vault `AdaptiveToolsKeyVault` (centralus, RBAC) holds four placeholder secrets tagged `purpose=adaptive-observability`. Hosting (2.3) and DB-secret cutover (2.4) are open below; UAT/Prod vault provisioning (2.1 partial) is open below. |
 | 3 — React Dashboard MVP | **Done.** Removed from this doc; see `git log`. |
 | 4 — Client SDKs | **Partial.** Both SDKs scaffolded with the full Phase 1 surface and 33 passing tests; shipped on `phase-4/client-sdks`. Outstanding work documented below (SCH fixture port, session-bracket auto-call, RouteData path, per-app dedup window). |
-| 5 — Session Timeline | **Partial.** Sessions schema + ingest + derived timeline + cross-process correlation + UI shipped on `phase-5/session-timeline` with 29 backend tests. Outstanding: 5.2 spike measurements were skipped; the SDK does not auto-bracket sessions yet (tracked as Issue 4.11). |
+| 5 — Session Timeline | **Partial.** Sessions schema + ingest + derived timeline + cross-process correlation + UI shipped on `phase-5/session-timeline`; 31 backend tests including chunked-IN-list and orphan-`/end` regressions. Outstanding: 5.2 benchmark spike not run; SDK does not auto-bracket sessions (Issue 4.11); 5.5 end-to-end correlation-id verification owned by Phase 6.1. |
 | 6 – 9 | Open. Documented below. |
 
 ## Constraints
@@ -335,8 +335,8 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 **Done in this phase already (on `phase-5/session-timeline`):**
 - 5.1 — `Sessions` table with `(ApplicationId, EnvironmentId, SessionId)` unique index and `(LastSeenAt)` index. **Decision (see 5.2 below):** no `SessionEvents` materialized table — timeline is derived at query time from `Events` + `Errors`.
-- 5.3 — `POST /api/ingest/sessions/start` and `/end` under the api-key-protected ingest group; idempotent (a duplicate `/start` updates the existing row, an orphan `/end` inserts a closing-only row).
-- 5.4 — `GET /api/sessions/{sessionId}/timeline` returns ordered entries tagged `event` | `error`; `is_api_failure` boolean on event entries flags `api_request_failed`. Each entry carries its `correlation_id`.
+- 5.3 — `POST /api/ingest/sessions/start` and `/end` under the api-key-protected ingest group; idempotent. A duplicate `/start` updates the existing row; an orphan `/end` (no prior `/start`) is dropped silently and the endpoint still returns 202 — previously inserted a malformed closing-only row.
+- 5.4 — `GET /api/sessions/{sessionId}/timeline` returns ordered entries tagged `event` | `error`; `is_api_failure` boolean on event entries flags `api_request_failed`. Each entry carries its `correlation_id`. The cross-process error join chunks correlation ids in batches of 1,000 to stay under SQL Server's ~2,100-parameter IN-clause limit, with a regression test that exercises the chunked path.
 - 5.5 — Cross-process correlation: backend errors that share a `CorrelationId` with any event in the session surface inline, tagged `source: "cross_process"`. The session row stamps `HasError = true` whenever any error ingestion arrives with a session id.
 - 5.6 — Session timeline UI: vertical timeline with type-coded markers (event / api failure / FE error / BE cross-process error), errors-only toggle, sticky details drawer with raw JSON.
 
@@ -347,22 +347,6 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 **Acceptance criteria:**
 - [ ] (Optional, defer to Phase 8 perf review) Run a benchmark spike with seeded synthetic data and record the latency + storage delta in `docs/perf.md`
 - [ ] Confirm the derived approach holds at ingestion volumes from real onboarded apps
-
-### Issue 5.3 — Idempotency edge case for `/end` without `/start`
-
-**Status:** implemented and tested for the lifecycle case. Outstanding: a `/end` arriving for an unknown session id currently inserts a closing-only row with `DistinctId = ""`, which then shows up in the dashboard as a malformed session.
-
-**Acceptance criteria:**
-- [ ] Decide: drop the orphan `/end` silently (and lose the bracket signal), or keep the closing row but flag it for filtering in the dashboard list
-- [ ] Whichever option, add a unit test for it
-
-### Issue 5.4 — Correlation-id IN-list size limit
-
-**Status:** the cross-process query uses `events.Select(ev => ev.CorrelationId).Contains(...)` which EF Core translates to a parameterized SQL `IN` clause. SQL Server caps parameter count at ~2,100, so a session with more than ~2k correlation-id-bearing events would throw on real SQL (in-memory tests don't exercise this).
-
-**Acceptance criteria:**
-- [ ] Replace the `Contains` call with a temp-table join, a chunked batch, or a `LIMIT` on per-session correlation ids before the query runs
-- [ ] Add a regression test that constructs a session with > 2,200 distinct correlation ids on real SQL Server (or LocalDB)
 
 ### Issue 5.5 — End-to-end correlation id propagation (cross-link to Phase 6)
 
