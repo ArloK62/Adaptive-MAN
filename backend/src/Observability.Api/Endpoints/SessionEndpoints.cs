@@ -15,8 +15,17 @@ namespace Observability.Api.Endpoints;
 /// </summary>
 public static class SessionEndpoints
 {
+    /// <summary>
+    /// Maximum correlation ids per chunk in the cross-process error query. SQL Server caps
+    /// total parameters at ~2,100; 1,000 leaves headroom for the other Where parameters and
+    /// any future query composition.
+    /// </summary>
+    private const int CrossProcessChunkSize = 1_000;
+
     public sealed record SessionStartRequest(string? SessionId, string? DistinctId, DateTime? StartedAt, string? ReleaseSha);
     public sealed record SessionEndRequest(string? SessionId, DateTime? EndedAt);
+
+    private sealed record TimelineEntry(DateTime OccurredAt, object Payload);
 
     public static void MapSessionIngestEndpoints(this RouteGroupBuilder ingest)
     {
@@ -96,22 +105,36 @@ public static class SessionEndpoints
             .OrderBy(e => e.OccurredAt)
             .ToListAsync(ct);
 
-        var directErrors = await db.Errors.AsNoTracking()
-            .Where(e => e.ApplicationId == session.ApplicationId
-                     && e.EnvironmentId == session.EnvironmentId
-                     && e.LastCorrelationId != null
-                     && events.Select(ev => ev.CorrelationId).Contains(e.LastCorrelationId))
-            .ToListAsync(ct);
+        // Distinct, non-null correlation ids drive the cross-process join. Chunked so a session
+        // with thousands of correlation-id-bearing events can't blow past SQL Server's
+        // ~2,100-parameter limit on a single IN clause.
+        var correlationIds = events
+            .Select(e => e.CorrelationId)
+            .Where(c => !string.IsNullOrEmpty(c))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
-        var correlationIds = events.Where(e => !string.IsNullOrEmpty(e.CorrelationId))
-            .Select(e => e.CorrelationId!)
-            .Distinct()
-            .ToHashSet(StringComparer.Ordinal);
+        var directErrors = new List<Domain.Telemetry.ErrorRecord>();
+        foreach (var chunk in correlationIds.Chunk(CrossProcessChunkSize))
+        {
+            // EF Core's expression interpreter doesn't translate `T[].Contains` cleanly; pass a List
+            // so the IN-clause materialization stays on the proven path.
+            var chunkList = chunk.ToList();
+            var rows = await db.Errors.AsNoTracking()
+                .Where(e => e.ApplicationId == session.ApplicationId
+                         && e.EnvironmentId == session.EnvironmentId
+                         && e.LastCorrelationId != null
+                         && chunkList.Contains(e.LastCorrelationId))
+                .ToListAsync(ct);
+            directErrors.AddRange(rows);
+        }
 
-        var entries = new List<object>();
+        var correlationIdSet = correlationIds.ToHashSet(StringComparer.Ordinal);
+
+        var entries = new List<TimelineEntry>(events.Count + directErrors.Count);
         foreach (var ev in events)
         {
-            entries.Add(new
+            entries.Add(new TimelineEntry(ev.OccurredAt, new
             {
                 kind = "event",
                 occurred_at = ev.OccurredAt,
@@ -122,11 +145,11 @@ public static class SessionEndpoints
                 correlation_id = ev.CorrelationId,
                 properties = TryParseJson(ev.PropertiesJson),
                 is_api_failure = ev.EventName == "api_request_failed",
-            });
+            }));
         }
         foreach (var er in directErrors)
         {
-            entries.Add(new
+            entries.Add(new TimelineEntry(er.LastSeenAt, new
             {
                 kind = "error",
                 occurred_at = er.LastSeenAt,
@@ -138,11 +161,11 @@ public static class SessionEndpoints
                 correlation_id = er.LastCorrelationId,
                 fingerprint = er.Fingerprint,
                 occurrence_count = er.OccurrenceCount,
-                source = correlationIds.Contains(er.LastCorrelationId ?? string.Empty) ? "cross_process" : "in_session",
-            });
+                source = correlationIdSet.Contains(er.LastCorrelationId ?? string.Empty) ? "cross_process" : "in_session",
+            }));
         }
 
-        var ordered = entries.OrderBy(o => (DateTime)o.GetType().GetProperty("occurred_at")!.GetValue(o)!).ToList();
+        var ordered = entries.OrderBy(e => e.OccurredAt).Select(e => e.Payload).ToList();
 
         return Results.Ok(new
         {

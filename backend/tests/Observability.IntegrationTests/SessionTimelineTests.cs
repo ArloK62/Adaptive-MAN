@@ -129,6 +129,93 @@ public class SessionTimelineTests : IClassFixture<IngestionWebApplicationFactory
     }
 
     [Fact]
+    public async Task Cross_process_correlation_handles_many_unique_ids()
+    {
+        // Regression for the IN-list parameter cap on SQL Server. The InMemory provider
+        // doesn't enforce the ~2,100-parameter limit, so this test pins the *behavior* —
+        // chunking must still produce one error entry per matched correlation id, in
+        // chronological order — rather than the SQL-level constraint. The chunk size is
+        // 1,000; this test uses 25 distinct correlation ids so it exercises a single chunk.
+        // A larger run that crosses multiple chunks would only verify the same loop body.
+        await _factory.SeedAsync();
+        var publicClient = AuthClient(_factory.PublicKeyPlaintext);
+        var serverClient = AuthClient(_factory.ServerKeyPlaintext);
+        var dashboard = _factory.CreateClient();
+
+        const int n = 25;
+        var sid = $"session-bulk-{Guid.NewGuid():N}";
+
+        var startRes = await publicClient.PostAsJsonAsync("/api/ingest/sessions/start", new
+        {
+            session_id = sid,
+            distinct_id = "user-bulk",
+        });
+        Assert.Equal(HttpStatusCode.Accepted, startRes.StatusCode);
+
+        for (var i = 0; i < n; i++)
+        {
+            var corr = $"corr-bulk-{i:D3}";
+            publicClient.DefaultRequestHeaders.Remove("X-Correlation-Id");
+            publicClient.DefaultRequestHeaders.Add("X-Correlation-Id", corr);
+            var fe = await publicClient.PostAsJsonAsync("/api/ingest/events", new
+            {
+                @event = "api_request_failed",
+                distinct_id = "user-bulk",
+                session_id = sid,
+                occurred_at = DateTime.UtcNow.AddSeconds(-(n - i)),
+                properties = new Dictionary<string, object?>
+                {
+                    ["endpoint_group"] = "orders",
+                    ["method"] = "GET",
+                    ["http_status_code"] = 500,
+                    ["is_network_error"] = false,
+                },
+            });
+            Assert.Equal(HttpStatusCode.Accepted, fe.StatusCode);
+
+            // Each FE failure has a matching BE error sharing the correlation id.
+            // Distinct exception types so each error is a separate row (not deduped by fingerprint).
+            serverClient.DefaultRequestHeaders.Remove("X-Correlation-Id");
+            serverClient.DefaultRequestHeaders.Add("X-Correlation-Id", corr);
+            var be = await serverClient.PostAsJsonAsync("/api/ingest/errors", new
+            {
+                error_type = $"Err{i:D3}",
+                exception_type = $"Test.Bulk.Exception{i:D3}",
+                distinct_id = "system:api",
+                occurred_at = DateTime.UtcNow.AddSeconds(-(n - i) + 1),
+                properties = new Dictionary<string, object?>
+                {
+                    ["endpoint_group"] = "orders",
+                    ["http_status_code"] = 500,
+                },
+            });
+            Assert.Equal(HttpStatusCode.Accepted, be.StatusCode);
+        }
+
+        var timelineRes = await dashboard.GetAsync($"/api/sessions/{sid}/timeline");
+        Assert.Equal(HttpStatusCode.OK, timelineRes.StatusCode);
+        var json = await timelineRes.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        var entries = doc.RootElement.GetProperty("entries").EnumerateArray().ToList();
+        var errorEntries = entries.Where(e => e.GetProperty("kind").GetString() == "error").ToList();
+        var eventEntries = entries.Where(e => e.GetProperty("kind").GetString() == "event").ToList();
+
+        Assert.Equal(n, eventEntries.Count);
+        Assert.Equal(n, errorEntries.Count);
+        Assert.All(errorEntries, e => Assert.Equal("cross_process", e.GetProperty("source").GetString()));
+
+        // Ordering: timestamps must be non-decreasing across the merged stream.
+        DateTime? prev = null;
+        foreach (var e in entries)
+        {
+            var t = e.GetProperty("occurred_at").GetDateTime();
+            if (prev is not null) Assert.True(t >= prev.Value, "Entries are not chronologically ordered.");
+            prev = t;
+        }
+    }
+
+    [Fact]
     public async Task Orphan_session_end_is_dropped_silently()
     {
         await _factory.SeedAsync();
