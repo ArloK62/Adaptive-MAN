@@ -84,7 +84,7 @@ internal static class Program
             await using (var db = new ObservabilityDbContext(opts))
             {
                 await db.Database.EnsureDeletedAsync();
-                await db.Database.MigrateAsync();
+                await db.Database.EnsureCreatedAsync();
             }
             await Seeder.SeedAsync(conn, opts, targetSessionId, targetEvents, fillerEvents, crossProcessErrors);
             sw.Stop();
