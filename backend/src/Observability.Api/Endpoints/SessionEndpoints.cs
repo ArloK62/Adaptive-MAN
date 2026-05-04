@@ -5,6 +5,7 @@ using Observability.Api.Middleware;
 using Observability.Application.Ingestion;
 using Observability.Domain.Telemetry;
 using Observability.Infrastructure.Persistence;
+using Observability.Infrastructure.Sessions;
 
 namespace Observability.Api.Endpoints;
 
@@ -15,13 +16,6 @@ namespace Observability.Api.Endpoints;
 /// </summary>
 public static class SessionEndpoints
 {
-    /// <summary>
-    /// Maximum correlation ids per chunk in the cross-process error query. SQL Server caps
-    /// total parameters at ~2,100; 1,000 leaves headroom for the other Where parameters and
-    /// any future query composition.
-    /// </summary>
-    private const int CrossProcessChunkSize = 1_000;
-
     public sealed record SessionStartRequest(string? SessionId, string? DistinctId, DateTime? StartedAt, string? ReleaseSha);
     public sealed record SessionEndRequest(string? SessionId, DateTime? EndedAt);
 
@@ -93,43 +87,14 @@ public static class SessionEndpoints
         if (string.IsNullOrWhiteSpace(sessionId))
             return Results.BadRequest(new { error = "missing_session_id" });
 
-        var session = await db.Sessions.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.SessionId == sessionId, ct);
-        if (session is null)
+        var result = await SessionTimelineQuery.RunAsync(db, sessionId, ct);
+        if (result is null)
             return Results.NotFound(new { error = "session_not_found", session_id = sessionId });
 
-        var events = await db.Events.AsNoTracking()
-            .Where(e => e.ApplicationId == session.ApplicationId
-                     && e.EnvironmentId == session.EnvironmentId
-                     && e.SessionId == sessionId)
-            .OrderBy(e => e.OccurredAt)
-            .ToListAsync(ct);
-
-        // Distinct, non-null correlation ids drive the cross-process join. Chunked so a session
-        // with thousands of correlation-id-bearing events can't blow past SQL Server's
-        // ~2,100-parameter limit on a single IN clause.
-        var correlationIds = events
-            .Select(e => e.CorrelationId)
-            .Where(c => !string.IsNullOrEmpty(c))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-
-        var directErrors = new List<Domain.Telemetry.ErrorRecord>();
-        foreach (var chunk in correlationIds.Chunk(CrossProcessChunkSize))
-        {
-            // EF Core's expression interpreter doesn't translate `T[].Contains` cleanly; pass a List
-            // so the IN-clause materialization stays on the proven path.
-            var chunkList = chunk.ToList();
-            var rows = await db.Errors.AsNoTracking()
-                .Where(e => e.ApplicationId == session.ApplicationId
-                         && e.EnvironmentId == session.EnvironmentId
-                         && e.LastCorrelationId != null
-                         && chunkList.Contains(e.LastCorrelationId))
-                .ToListAsync(ct);
-            directErrors.AddRange(rows);
-        }
-
-        var correlationIdSet = correlationIds.ToHashSet(StringComparer.Ordinal);
+        var session = result.Session;
+        var events = result.Events;
+        var directErrors = result.CrossProcessErrors;
+        var correlationIdSet = result.CorrelationIds;
 
         var entries = new List<TimelineEntry>(events.Count + directErrors.Count);
         foreach (var ev in events)
