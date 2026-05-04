@@ -28,13 +28,14 @@ var app = builder.Build();
 
 app.ValidateRequiredSecrets();
 
-if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<ObservabilityDbContext>();
-    // Phase 0/1: EnsureCreated for fast local bring-up. Phase 2+: replace with MigrateAsync once an Initial
-    // migration is generated (`dotnet ef migrations add Initial -p ../Observability.Infrastructure`).
-    await db.Database.EnsureCreatedAsync();
+    // InMemory provider used by integration tests is non-relational; Migrate would throw.
+    if (db.Database.IsRelational())
+    {
+        await db.Database.MigrateAsync();
+    }
 }
 
 app.UseMiddleware<CorrelationIdMiddleware>();

@@ -35,7 +35,7 @@ describe("init / track", () => {
   });
 
   it("track sends an event", async () => {
-    obs.init({ ingestUrl: "http://x", apiKey: "k", batchSize: 1, flushIntervalMs: 10 });
+    obs.init({ ingestUrl: "http://x", apiKey: "k", batchSize: 1, flushIntervalMs: 10, trackSessions: false });
     obs.identify("u1");
     obs.track("auth_logout");
     await Promise.resolve();

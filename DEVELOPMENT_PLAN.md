@@ -22,9 +22,11 @@ Custom event ingestion · Custom error ingestion · Strict privacy allowlists ·
 | 1 — Backend Ingestion MVP | **Done.** Removed from this doc; see `git log`. |
 | 2 — Azure Key Vault & Deployment | **Partial.** KV config provider, fail-fast validation, and setup docs shipped (was 2.2 + 2.5). Dev vault `AdaptiveToolsKeyVault` (centralus, RBAC) holds four placeholder secrets tagged `purpose=adaptive-observability`. Hosting (2.3) and DB-secret cutover (2.4) are open below; UAT/Prod vault provisioning (2.1 partial) is open below. |
 | 3 — React Dashboard MVP | **Done.** Removed from this doc; see `git log`. |
-| 4 — Client SDKs | **Partial.** Both SDKs scaffolded with the full Phase 1 surface and 33 passing tests; shipped on `phase-4/client-sdks`. Outstanding work documented below (SCH fixture port, session-bracket auto-call, RouteData path, per-app dedup window). |
-| 5 — Session Timeline | **Partial.** Sessions schema + ingest + derived timeline + cross-process correlation + UI shipped on `phase-5/session-timeline`; 31 backend tests including chunked-IN-list and orphan-`/end` regressions. Outstanding: 5.2 benchmark spike not run; SDK does not auto-bracket sessions (Issue 4.11); 5.5 end-to-end correlation-id verification owned by Phase 6.1. |
-| 6 – 9 | Open. Documented below. |
+| 4 — Client SDKs | **Near-complete.** Both SDKs scaffolded; JS SDK now auto-brackets sessions (Issue 4.11) with 27 passing tests. Issues 4.7 closed (won't-do) and 4.8 handed to 8.2 (Brandon confirmed 2026-04-30). Only remaining: SCH route-fixture re-run (4.2), deferred to Phase 6 cutover prep. |
+| 5 — Session Timeline | **Partial.** Sessions schema + ingest + derived timeline + cross-process correlation + UI shipped on `phase-5/session-timeline`; 31 backend tests including chunked-IN-list and orphan-`/end` regressions. SDK auto-bracket gap closed via Issue 4.11. Outstanding: 5.2 benchmark spike not run; 5.5 end-to-end correlation-id verification owned by Phase 6.1. |
+| 6 — SCH Onboarding | Open. **Re-scoped 2026-04-30:** PostHog Phase 1 was never merged from `feature/posthog-implementation` into SCH `dev` or `main` (verified). PostHog migration is dropped; SCH onboards as a fresh integration. PostHog branches retained as scaffolding reference only. |
+| 7 — WMS Onboarding | Open. Targets `WMSSite` (UI) + `WMSAPI` (backend), replacing the original `SecondApp_*` placeholders. |
+| 8 – 9 | Open. Documented below. |
 
 ## Constraints
 
@@ -69,15 +71,15 @@ These are **inputs**, not duplicated work. The plan references them throughout.
 **Phase 1 event set (already in code, must be preserved verbatim):**
 `auth_login_success`, `auth_logout`, `page_viewed`, `api_request_failed`, `frontend_exception`, `server_error_occurred`, `background_job_failed`, plus dev-only `posthog_test_event` (renamed for the new platform).
 
-**Deferred PostHog hardening items** (still open — folded into Phase 6 as cutover prerequisites):
+**Deferred PostHog hardening items** (folded into Phase 6.1 as fresh-onboarding prerequisites — they apply to adaptive-observability integration whether PostHog ships or not):
 - BG job failure dedup/cooldown (15–30 min window) on SCH_API
 - `release_sha` populated in deployed environments
-- Dev-only `/api/dev/posthog-test` locked to Development only
+- Dev-only test endpoint (was `/api/dev/posthog-test`) locked to Development only and renamed
 - Generic role names audit (no user-specific labels)
 - Correlation ID confirmed as true request trace ID end-to-end
-- `VITE_POSTHOG_KEY` / `VITE_POSTHOG_HOST` (and equivalents for the new platform) in `.env.example`
+- `.env.example` updated with `VITE_OBSERVABILITY_KEY` / `VITE_OBSERVABILITY_HOST` (replaces unmerged `VITE_POSTHOG_*`)
 - UAT replay masking audit before any prod replay discussion
-- `PostHog.AspNetCore v2.5.0` pre-release dependency monitored until removed in cutover
+- `PostHog.AspNetCore v2.5.0` pre-release dependency: **no longer a risk** — it never reached SCH `dev`/`main`. Branches retained for scaffolding reference only.
 
 **Phase 2 deferred event ideas** (input to future event catalog updates, not part of this plan's MVP):
 - SCH_UI: `order_created`, `order_submitted`, `report_generated`, `document_uploaded`
@@ -193,14 +195,14 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 **Description:** Dev shares the existing `AdaptiveToolsKeyVault`. UAT and Prod still need dedicated `kv-observability-uat` and `kv-observability-prod` for blast-radius isolation. Provision alongside their respective hosting envs (no point standing up an empty vault).
 
+**Decisions made (Brandon, 2026-04-30):**
+- **IaC tool:** stay on `az` CLI scripts.
+- **Dev vault:** Brandon will provision a fresh dedicated Key Vault for adaptive-observability rather than continuing to share `AdaptiveToolsKeyVault`. He owns the provisioning.
+
 **Acceptance criteria:**
 - [ ] `kv-observability-uat`, `kv-observability-prod` provisioned in their App Service's region
 - [ ] Soft-delete on both; purge protection on prod
 - [ ] RBAC-only (no access policies); App Service MI granted `Key Vault Secrets User`, scoped to that vault only
-
-**Decisions needed:**
-- IaC tool — Bicep, Terraform, or stay on `az` CLI? An authoritative module should land before UAT.
-- Cut Dev over to a dedicated `kv-observability-dev` at the same time, or leave it on the shared `AdaptiveToolsKeyVault`? (Shared is acceptable for Dev only; reconsider if other tools' principals start needing access.)
 
 ### Issue 2.3 — Hosting environment + managed identity for the Observability API
 
@@ -211,22 +213,21 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 - `Microsoft.App` resource provider is **not registered**, so Container Apps requires an extra `az provider register -n Microsoft.App` step.
 - One resource group exists (`AdaptiveTools`, centralus). Either colocate or spin up `rg-observability-{env}`.
 
-**Recommended path:** App Service Linux + system-assigned MI in `centralus` (matches SQL + KV regions). Container Apps is viable but adds RP registration and ingress configuration.
+**Recommended path:** App Service Linux + user-assigned MI in `centralus` (matches SQL + KV regions). Container Apps was ruled out below.
+
+**Decisions made (Brandon, 2026-04-30 / 2026-05-02):**
+- **Hosting platform:** App Service Linux. Brandon owns App Service provisioning so it's wired to adaptive-email login.
+- **Resource group:** colocate under existing `AdaptiveTools` RG.
+- **Identity flavor:** user-assigned managed identity.
+- **App Service Plan:** reuse a single shared plan; provision a new App Service *instance* per environment (Dev first). Brandon owns plan provisioning.
+- **SKU / app name / slot strategy:** Brandon picks at provision time. Plan-level reuse means Dev shares whatever SKU the plan ships with.
 
 **Acceptance criteria:**
-- [ ] App Service Plan + App Service (or Container App) provisioned for Dev
-- [ ] System-assigned MI enabled on the App Service
+- [ ] App Service Plan provisioned, hosting a Dev App Service instance (Brandon)
+- [ ] User-assigned MI created and attached to the App Service
 - [ ] MI granted `Key Vault Secrets User` on the Dev vault, scoped to that vault only
 - [ ] `KeyVault__Uri` app setting points at the Dev vault
 - [ ] `/health` returns 200 from the deployed API; KV-backed config resolves on startup
-
-**Decisions needed:**
-- **Hosting platform:** App Service Linux (recommended) vs Container Apps (requires RP registration first).
-- **SKU for Dev:** B1 (~$13/mo), P0v3 (~$50/mo), or other.
-- **Globally-unique app name:** e.g. `app-observability-dev`, `adaptive-observability-dev`.
-- **Resource group:** new `rg-observability-dev` (recommended) vs colocate in `AdaptiveTools`.
-- **Identity flavor:** system-assigned (simpler) vs user-assigned (portable across slots/apps).
-- **Slot strategy:** single slot for Dev, or staging slot for blue/green?
 
 ### Issue 2.4 — Move database secret to Key Vault
 
@@ -251,12 +252,14 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 - [ ] `appsettings.*.json` in deployed envs contain no connection string
 - [ ] Deployed API connects; ingestion smoke test writes a row
 
-**Decisions needed:**
-- **Server topology:** Path A (reuse `adaptivetoolssql`) vs Path B (dedicated server). Recommend A for Dev, decide separately for UAT/Prod.
-- **Network access:** VNet-integrate App Service + add private endpoint (recommended) vs re-enable public network with a firewall rule (regression).
-- **Database SKU:** `GP_S_Gen5_1` serverless (~$5–15/mo idle, matches `MaintenanceDB`) or fixed-capacity?
-- **Migration strategy:** generate `dotnet ef migrations add Initial` and switch `EnsureCreatedAsync` → `MigrateAsync` *before* the first non-Dev deploy. Currently dev-only EnsureCreated is in place.
-- **Human dependency:** the `CREATE USER … FROM EXTERNAL PROVIDER` T-SQL must be run by the AAD admin on SQL (`brandon@adaptivesoftwarellc.com`). No other principal can grant DB access. Capture his availability before the deploy window.
+**Decisions made (Brandon, 2026-04-30 / 2026-05-02):**
+- **Server topology:** Path A — reuse `adaptivetoolssql`; new `ObservabilityDev` database for Dev (and per-env DBs for UAT/Prod when those land).
+- **Network access:** Re-enable public network access on `adaptivetoolssql` + add a firewall rule for the App Service outbound IPs. **Note:** this reverses the prior "public access disabled" hardening — App Service outbound IPs change on plan scale events, so this option carries a small ongoing maintenance cost (firewall rule must be re-synced if the plan changes). Recorded for visibility; revisit at UAT/Prod if posture concerns surface.
+- **Human dependency:** Brandon will run the `CREATE USER … FROM EXTERNAL PROVIDER` T-SQL when the App Service MI is ready.
+- **Migration strategy:** Generate `dotnet ef migrations add Initial`, switch `EnsureCreatedAsync` → `MigrateAsync` as part of this issue (before the first non-Dev deploy).
+
+**Decisions still needed:**
+- **Database SKU for `ObservabilityDev`:** match `MaintenanceDB` shape (`GP_S_Gen5_1` serverless, ~$5–15/mo idle) or fixed-capacity? Default to serverless unless told otherwise.
 
 ---
 
@@ -296,34 +299,25 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 ### Issue 4.7 — `RouteData`-aware path normalization
 
-**Status:** path-based fallback is implemented (`RouteNormalizer.NormalizeFromContext` reads `Request.Path`). The `RouteData`/endpoint-template path stated in the original acceptance criteria was deliberately skipped because endpoint metadata APIs differ between MVC, Minimal APIs, and `IRouteDiagnosticsMetadata`, and getting it wrong silently breaks normalization without throwing.
-
-**Acceptance criteria:**
-- [ ] Decide whether the `RouteData` path is worth the surface-area cost (it primarily helps with MVC controllers that have catch-all parameters; Minimal APIs already produce `:id`-style normalization through plain path parsing)
-- [ ] If yes: add it with explicit MVC + Minimal-API integration tests so a regression is caught
-- [ ] Re-run against SCH_API route fixtures (same dependency as 4.2)
+**Status:** **Closed as won't-do** (Brandon confirmed 2026-04-30). Path-based fallback (`RouteNormalizer.NormalizeFromContext` reads `Request.Path`) covers Minimal APIs cleanly and is sufficient for the apps in scope. Endpoint-metadata reflection differs between MVC and Minimal APIs and silently breaks normalization without throwing — not worth re-introducing without a concrete MVC catch-all use case. Revisit only if a future onboarded app needs it.
 
 ### Issue 4.8 — Per-app BG dedup window
 
-**Status:** dedup table + window logic + 100-failure integration test are in place; window is a static 15-minute default in `IngestionService`. The original 4.8 acceptance criterion ("window configurable per-app") overlaps with Phase 8.2's "hardens (per-app override, audit of suppressed-vs-incident counts)." Proposed split: leave the static default in 4.8 as shipped, and explicitly own the per-app override in 8.2.
-
-**Acceptance criteria:**
-- [ ] Confirm split with the team; if 4.8 retains ownership, add a `BackgroundJobDedupWindow` column on `AppEnvironments` (nullable; falls back to static default) and thread it through the upsert
-- [ ] If 8.2 takes ownership, mark this issue closed and update the 8.2 description
+**Status:** **Per-app override handed to Phase 8.2** (Brandon confirmed 2026-04-30). The dedup table + window logic + 100-failure integration test ship as-is with a static 15-minute default; the per-app override scope is folded into 8.2's "hardens (per-app override, audit of suppressed-vs-incident counts)" so we don't fragment the work.
 
 ### Issue 4.11 — JS SDK auto-bracket sessions (Phase 5 integration gap)
 
-**Description:** The JS SDK creates a session id in `init()` and stamps it on every event, but it does not call `POST /api/ingest/sessions/start` automatically. The Phase 5 backend's `BumpSessionAsync` will not fabricate a `Sessions` row from event traffic (by design — see [`docs/architecture.md`](docs/architecture.md)), so a freshly-onboarded app's `Sessions` table stays empty and `/api/sessions/{sessionId}/timeline` returns 404. End-to-end the platform has a hole until this lands.
+**Status:** **Implemented** (`packages/observability-client-js/src/sessionBracket.ts` + wiring in `index.ts`). 7 new vitest cases cover first-call bracketing across `track`/`capturePageView`/`captureException`, idempotency, `trackSessions: false` opt-out, `shutdown()` end-call, and `reset()` re-bracketing.
 
-**Acceptance criteria:**
-- [ ] On the first `track()` / `capturePageView()` / `captureException()` after `init()`, the SDK fires-and-forgets `POST /api/ingest/sessions/start` with `{ session_id, distinct_id, release_sha }`. Subsequent events bump `LastSeenAt` server-side as already implemented.
-- [ ] On `beforeunload` (browser) and `shutdown()` (programmatic), the SDK fires `POST /api/ingest/sessions/end`. Use `navigator.sendBeacon` for the unload path so it survives navigation.
-- [ ] Idempotent: a second `start` call within the same session must not duplicate (server-side upsert already handles this, but the SDK shouldn't spam either).
-- [ ] Optional `init({ trackSessions: false })` to disable for hosts that bracket sessions manually.
-- [ ] Integration test that runs the JS SDK against the real ingestion API and confirms a `Sessions` row appears with `started_at` and `last_seen_at` populated.
+**Implementation notes:**
+- `beforeunload` uses `fetch({ keepalive: true })` rather than `navigator.sendBeacon` because the api-key middleware reads `X-Observability-Key` from request headers and `sendBeacon` cannot set custom headers. Modern browsers complete keepalive fetches across navigation just like sendBeacon would.
+- `init({ trackSessions: false })` is the documented opt-out for hosts that bracket sessions manually.
 
-**Investigation questions:**
-- Should the .NET SDK also bracket sessions for server-rendered apps, or is session bracketing strictly a FE concern? (Leaning FE-only; server-side telemetry uses `system:*` distinct ids and rarely benefits from session timelines.)
+**Open acceptance criteria:**
+- [ ] Integration test that runs the JS SDK against the real ingestion API and confirms a `Sessions` row appears with `started_at` and `last_seen_at` populated. (Deferred to Phase 6 cutover prep where a live ingest API exists.)
+
+**Resolved questions:**
+- **.NET SDK session bracketing:** **FE-only** (Brandon confirmed 2026-04-30). Server-side telemetry uses `system:*` distinct ids and rarely benefits from session timelines.
 
 ---
 
@@ -359,129 +353,220 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 ---
 
-## Phase 6 — SCH Migration: PostHog → adaptive-observability
+## Phase 6 — SCH Onboarding (PostHog skipped)
 
-**Goal:** Cut SCH_UI and SCH_API over from PostHog to the new platform with zero signal loss and no privacy regressions.
+**Re-scope decision (2026-04-30):** `feature/posthog-implementation` was never merged into SCH_API or SCH_UI's `dev`/`main` (verified: branch is 4 commits ahead of `dev` on each repo, contained in no other branch; `dev` has zero PostHog references outside `POSTHOG_EVENT_CATALOG.md`). The PostHog Phase 1 work is therefore reference scaffolding, not a live integration. SCH onboards onto adaptive-observability as a fresh integration. Dual-write parity, PostHog cutover, and PostHog dependency removal (former 6.6 / 6.7 / 6.8) are dropped from scope.
 
-**Exit criteria:** SCH_UI + SCH_API emit Phase 1 events to `adaptive-observability` UAT; parity validated against PostHog for 5 business days; PostHog decommissioned for SCH; zero `SafetyViolations`.
+**Goal:** Ship SCH_UI + SCH_API onto adaptive-observability as the first onboarded app pair, leveraging the unmerged PostHog branches as scaffolding for emission points (event names, identity rules, ErrorBoundary, Axios interceptor, GlobalExceptionMiddleware, BG-service catch blocks).
 
-**Strategy:** Implement `IAnalyticsService` against the new platform → register both PostHog and adaptive-observability for a dual-write window in UAT → validate parity → swap registration to adaptive-only → remove `PostHog.AspNetCore` dependency.
+**Exit criteria:** SCH_UI + SCH_API emit the Phase 1 event set to adaptive-observability UAT for 5 business days with zero `SafetyViolations`; privacy reviewer sign-off committed; Prod stable for 1 week.
 
-### Issue 6.1 — Apply deferred PostHog hardening (prereqs)
-**Description:** Resolve open hardening items before/alongside cutover so the migration starts from a known-good baseline.
+**Strategy:** Cherry-pick the analytics scaffolding from `feature/posthog-implementation` into a new `feature/adaptive-observability` branch on each SCH repo, replacing PostHog SDK calls with `observability-client-{js,dotnet}` calls. The SCH `IAnalyticsService` interface is replaced by the SDK's own (under `Adaptive.ObservabilityClient`); SCH adopts that one rather than its local copy.
+
+### Issue 6.1 — Hardening prereqs (in this repo and SCH)
+**Description:** Items previously folded into "deferred PostHog hardening" still apply to a fresh adaptive-observability integration. Resolve before SCH UAT.
 **Acceptance criteria:**
-- [ ] BG job dedup (15–30 min cooldown) live in SCH_API (or implemented in SDK; see 4.8)
-- [ ] `release_sha` populated in deployed environments (UAT + Prod)
-- [ ] `/api/dev/posthog-test` confirmed unreachable outside Development
-- [ ] Generic role names audit complete on `auth_login_success` (no user-specific labels)
-- [ ] Correlation ID is a true request trace ID end-to-end
-- [ ] `.env.example` includes the new platform's keys (to replace `VITE_POSTHOG_KEY` / `VITE_POSTHOG_HOST`)
-**Investigation questions:**
-- Run hardening on PostHog branches first (low risk), or roll directly into the cutover PR?
+- [ ] 4.11 (SDK auto-bracket sessions) shipped — without this, SCH `Sessions` rows are never written and Phase 5 timelines stay empty
+- [ ] 4.2 (SCH route fixture port) — port the validated regression suite from SCH_UI's `routeUtils.ts` tests into `packages/observability-client-js/src/__tests__/`
+- [ ] 5.5 verification harness — trace one SCH UAT request FE → BE → ingestion and confirm the same correlation id lands on both `api_request_failed` (FE) and `server_error_occurred` (BE)
+- [ ] EF `Initial` migration generated and `EnsureCreatedAsync` switched to `MigrateAsync` (owned by Phase 2.4) — required before the first non-Dev deploy
+- [ ] Phase 2.3 hosting + 2.4 DB cutover at least Dev+UAT — without these the API has nowhere to receive SCH events
+- [ ] BG job dedup confirmed working in SCH_API integration (4.8 static 15-min default acceptable; per-app override deferred to 8.2)
+- [ ] `release_sha` populated in SCH_API + SCH_UI deployed envs via CI build-time injection
+- [ ] Generic role names audit on `auth_login_success` (no user-specific labels)
+- [ ] `.env.example` in SCH_UI includes `VITE_OBSERVABILITY_KEY` / `VITE_OBSERVABILITY_HOST`
+- [ ] Dev-only test endpoint (was `/api/dev/posthog-test`) replaced with `/api/dev/observability-test`, confirmed unreachable outside Development
 
-### Issue 6.2 — Audit SCH_UI for migration touchpoints
-**Description:** Catalog files that change. Expected based on the handoff: `analytics.ts`, `routeUtils.ts`, `main.tsx`, `App.tsx`, `apiClient.ts`, `authStore.ts`, `ErrorBoundary.tsx`, env files.
+### Issue 6.2 — Audit SCH_UI integration touchpoints
+**Description:** Catalog files that change in the new `feature/adaptive-observability` branch off `dev`. Expected (mirrors the unmerged PostHog scaffolding): `services/analytics.ts`, `utils/routeUtils.ts`, `main.tsx`, `App.tsx`, `services/apiClient.ts`, `store/authStore.ts`, `components/common/ErrorBoundary.tsx`, env files.
 **Acceptance criteria:**
-- [ ] Doc lists every file with a PostHog reference
-- [ ] Doc lists every env var to swap
+- [ ] `docs/audits/sch-ui.md` lists every file added/modified
+- [ ] Lists every env var added (`VITE_OBSERVABILITY_*`)
+- [ ] Confirms no PostHog packages enter `package.json`
 
-### Issue 6.3 — Implement `AdaptiveObservabilityClient` in `observability-client-js`
-**Description:** Already done in Phase 4.1 — this issue is the SCH-side adoption.
+### Issue 6.3 — Implement adaptive-observability in SCH_UI
+**Description:** Cherry-pick analytics scaffolding from `feature/posthog-implementation` and rewire onto `observability-client-js`. The SDK API surface mirrors the PostHog branch's `analytics.ts` so most scaffolding ports unchanged; PostHog imports and `posthog.*` direct calls are replaced.
 **Acceptance criteria:**
-- [ ] SCH_UI's `analytics.ts` rewires its underlying transport from PostHog SDK to the new SDK
-- [ ] All `posthog.*` direct calls (in `main.tsx`, `authStore.ts`) replaced with the new SDK's equivalents
-- [ ] Compile-time event allowlist preserved (no event names change)
+- [ ] `feature/adaptive-observability` branched from current `dev` on SCH_UI
+- [ ] `analytics.ts` (or equivalent) backed by `observability-client-js`
+- [ ] All Phase 1 emission points wired (login/logout, page views, API failures, exceptions)
+- [ ] Compile-time event allowlist preserved (TypeScript unions)
+- [ ] No `posthog-js` dependency added
 
-### Issue 6.4 — Audit SCH_API for migration touchpoints
-**Description:** Catalog files that change. Expected: `Program.cs` (DI), `appsettings.json` (config section rename), `PostHogService.cs` (replaced or kept dual), `SCH.Infrastructure.csproj` (drop `PostHog.AspNetCore`).
+### Issue 6.4 — Audit SCH_API integration touchpoints
+**Description:** Catalog files that change. Expected: `Program.cs` (DI), `appsettings.json` (`AdaptiveObservability` section), new `AdaptiveObservabilityService` (or direct SDK consumption), `GlobalExceptionMiddleware.cs`, all 8 BG services.
 **Acceptance criteria:**
-- [ ] Doc lists every file with a PostHog reference
-- [ ] Doc lists every config key to swap
+- [ ] `docs/audits/sch-api.md` lists every file added/modified
+- [ ] Lists every config key added
+- [ ] Confirms no `PostHog.AspNetCore` reference enters `SCH.Infrastructure.csproj`
 
-### Issue 6.5 — Implement `AdaptiveObservabilityService : IAnalyticsService` in `observability-client-dotnet`
-**Description:** Already done in Phase 4.6 — this issue is the SCH-side adoption.
+### Issue 6.5 — Implement adaptive-observability in SCH_API
+**Description:** Cherry-pick analytics scaffolding from `feature/posthog-implementation` and wire to the SDK's `AddAdaptiveObservability(...)`. SCH adopts the SDK's own `IAnalyticsService` (under `Adaptive.ObservabilityClient`) rather than its local copy from the unmerged PostHog branch.
 **Acceptance criteria:**
-- [ ] SCH_API DI registration adds `AddAdaptiveObservability(...)` from new SDK
-- [ ] No call site in `GlobalExceptionMiddleware.cs` or background services changes (because they consume `IAnalyticsService`, not the implementation)
-- [ ] `appsettings.json` gains `AdaptiveObservability` section mirroring the existing `PostHog` shape
+- [ ] `feature/adaptive-observability` branched from current `dev` on SCH_API
+- [ ] DI registration via `AddAdaptiveObservability(...)`
+- [ ] `GlobalExceptionMiddleware` ported (emits `server_error_occurred` on true 500s only)
+- [ ] All 8 BG services emit `background_job_failed` from catch blocks
+- [ ] `appsettings.json` gains `AdaptiveObservability` section
+- [ ] Correlation ID middleware ported
 
-### Issue 6.6 — Dual-write window in UAT
-**Description:** Register a composite `IAnalyticsService` that fans out to both PostHog and adaptive-observability for 5 business days in UAT. Compare counts daily.
+### Issue 6.6 — Onboard SCH apps in adaptive-observability dashboard
+**Description:** Create dashboard rows + provision keys. Pure admin work in this repo's dashboard.
 **Acceptance criteria:**
-- [ ] Composite implementation behind a feature flag
-- [ ] Daily count comparison committed to a soak log
-- [ ] Variance < 1% per event type for 5 consecutive days
-**Investigation questions:**
-- Variance threshold — 1%, 2%? Defines what "parity" means.
+- [ ] `SCH_UI` and `SCH_API` rows created with Dev/UAT/Prod environments
+- [ ] Public + server API keys provisioned and stored in SCH's secret stores (Key Vault)
+- [ ] Smoke event from each environment lands in adaptive-observability with correct app/env attribution
 
-### Issue 6.7 — Cut PostHog off in UAT, then Prod
-**Description:** After parity, flip composite to adaptive-only in UAT, soak 48h, then Prod.
+### Issue 6.7 — UAT soak + privacy validation
+**Description:** Replaces former dual-write parity gate. SCH UAT runs on adaptive-observability for 5 business days; daily safety-violation check.
 **Acceptance criteria:**
-- [ ] UAT on adaptive-only for 48h with zero `SafetyViolations`
-- [ ] Prod cutover with rollback plan documented
-- [ ] PostHog project for SCH archived (not deleted) for evidence retention
+- [ ] 5 business days of UAT traffic
+- [ ] Zero `SafetyViolations` rows
+- [ ] Daily soak log committed (`docs/migration/sch-uat-soak.md`)
+- [ ] Privacy/compliance reviewer sign-off committed
 
-### Issue 6.8 — Remove `PostHog.AspNetCore` and PostHog FE SDK
-**Description:** Final dependency removal once Prod is stable for 1 week.
+### Issue 6.8 — SCH Prod cutover
+**Description:** After UAT soak passes, deploy to SCH Prod with a documented rollback.
 **Acceptance criteria:**
-- [ ] `PostHog.AspNetCore` removed from `SCH.Infrastructure.csproj`
-- [ ] `posthog-js` (or whichever FE package) removed from `sch-ui/package.json`
-- [ ] All `PostHog*` files deleted (PostHogService.cs etc.) — `IAnalyticsService` and `NullAnalyticsService` retained
-- [ ] `POSTHOG_EVENT_CATALOG.md` renamed in both repos to `OBSERVABILITY_EVENT_CATALOG.md` (or replaced with link to platform docs)
-- [ ] Rollback PR prepped just in case
+- [ ] Rollback plan documented (DI registration revert + env-var flip; FE config flip via `VITE_OBSERVABILITY_*` removal)
+- [ ] Prod deploy executed
+- [ ] 1 week stable in Prod with zero `SafetyViolations`
+- [ ] `feature/posthog-implementation` branches archived in both SCH repos (kept for reference, not deleted)
+- [ ] `POSTHOG_EVENT_CATALOG.md` in both SCH repos replaced with a stub linking to `docs/event-catalog.md` in this platform
 
 ### Issue 6.9 — SCH-specific dashboard preset
-**Description:** Saved dashboard view in adaptive-observability with SCH selected by default. Replaces the planned "SCH Phase 1 Health Dashboard."
+**Description:** Saved dashboard view with SCH selected by default. Replaces the planned "SCH Phase 1 Health Dashboard." This is the only Phase 6 issue that lands in *this* repo (frontend-only).
 **Acceptance criteria:**
 - [ ] Saved view reachable via dashboard nav
-- [ ] Cards match the original PostHog dashboard plan
-
-### Issue 6.10 — UAT soak + privacy validation
-**Description:** Daily check of `SafetyViolations` for the soak window.
-**Acceptance criteria:**
-- [ ] Daily safety-violation log committed
-- [ ] Privacy/compliance reviewer sign-off
+- [ ] Cards match the original PostHog dashboard plan (`POSTHOG_DASHBOARD_PLAN.md` in SCH)
 
 ---
 
-## Phase 7 — Second App Onboarding
+## Phase 7 — WMSSite + WMSAPI Onboarding
 
-**Goal:** Onboard the second accessible app pair (`SecondApp_UI` + `SecondApp_API`). **No PostHog migration here** — this app is fresh-onboarding using the SDKs validated in Phase 6.
+**Goal:** Onboard `WMSSite` (UI) + `WMSAPI` (backend) using the SDKs and integration pattern validated by SCH onboarding. Replaces the original `SecondApp_*` placeholders.
 
-**Exit criteria:** Second app emits Phase 1 events with zero safety violations; multi-app dashboard switching validated.
+**Exit criteria:** WMS apps emit the Phase 1 event set to adaptive-observability UAT with zero `SafetyViolations`; multi-app dashboard switching validated; cross-process timeline join works for at least one WMS error.
 
-### Issue 7.1 — Audit `SecondApp_UI`
-**Description:** Routing, auth, API client, error boundaries, env config.
-**Acceptance criteria:** `docs/audits/secondapp-ui.md` complete.
+**Verified state (snapshot 2026-04-30):**
+- **WMSSite** (active branch `feature/provider-intake-dropdown`): React 18 + Vite, **JavaScript/JSX (not TypeScript)** — `jsconfig.json`, no `tsconfig.json`. Auth: **MSAL** (`@azure/msal-browser`, `@azure/msal-react`) — Entra/Azure AD, not custom JWT. UI: MUI (not Tailwind/shadcn). Data: TanStack Query + Axios. Sensitive surfaces visible in `src/sections/` include intake, provider notes, wound assessment, regional reports.
+- **WMSAPI** (active branch `feature/physician-list-endpoint`): .NET 8 ASP.NET Core, **Dapper-heavy + EF Core**, JWT bearer auth (paired with MSAL). `BackgroundProcessingService` exists. **No global exception middleware** (no `*Middleware*.cs` or `*Exception*.cs` files). **No correlation ID anywhere** — zero matches across the repo on `CorrelationId|X-Correlation|correlation_id`.
 
-### Issue 7.2 — Audit `SecondApp_API`
-**Description:** Middleware order, BG jobs, error handling, correlation IDs.
-**Acceptance criteria:** `docs/audits/secondapp-api.md` complete.
+These differences from SCH (JS not TS, MSAL not custom JWT, no exception middleware, no correlation ID) make this onboarding net-new infrastructure, not a port. Issues 7.3–7.7 below are the prereqs that did not exist in Phase 6.
 
-### Issue 7.3 — `SECOND_APP_EVENT_CATALOG.md`
-**Description:** App-specific events on top of the global Phase 1 set; global rules referenced, not duplicated.
+### Issue 7.1 — Audit WMSSite
+**Description:** Catalog routing, MSAL auth integration, Axios usage, existing error boundaries, env config, and PHI-sensitive routes.
+**Acceptance criteria:**
+- [ ] `docs/audits/wmssite.md` complete
+- [ ] Lists existing React error boundaries (if any) — strategy decision feeds 7.8
+- [ ] Lists Axios instances — strategy decision feeds 7.5 (correlation-id forwarding)
+- [ ] Lists routes that must never emit `page_viewed` (PHI-bearing)
+
+### Issue 7.2 — Audit WMSAPI
+**Description:** Middleware pipeline, exception handling pattern (per-controller catches expected — no global middleware exists), all `IHostedService`/`BackgroundService` implementations, outbound HttpClient usage.
+**Acceptance criteria:**
+- [ ] `docs/audits/wmsapi.md` complete
+- [ ] Inventory of per-controller try/catch blocks (input to 7.6 reconciliation)
+- [ ] List of all BG services beyond `BackgroundProcessingService` (input to 7.7)
+- [ ] List of outbound HttpClient registrations (input to 7.5 propagation)
+
+### Issue 7.3 — JS-vs-TS SDK consumption strategy for WMSSite
+**Description:** WMSSite is JavaScript, so the SDK's compile-time event allowlist (TypeScript unions) is not enforced at host build time. Decide the developer-experience guarantee for event-name correctness. The server-side allowlist (Phase 1.4 + `SafetyViolations`) is the only safety net regardless of choice; this decision is about *catching typos earlier*.
+**Decisions needed:**
+- Ship `.d.ts` types only — rely on JSDoc + editor IntelliSense (lowest friction, weakest guarantee)
+- Require `// @ts-check` on analytics-touching files — per-file enforcement, no project-wide TS migration
+- Add an ESLint rule that flags `track('foo')` calls where `'foo'` is not in a known list (loudest, most maintenance)
+- Defer to runtime-only — accept that typos surface as `SafetyViolations` rows, not build failures
+**Acceptance criteria:**
+- [ ] Decision recorded in `docs/audits/wmssite.md` with rationale
+- [ ] If `.d.ts`/`@ts-check`/ESLint chosen, the convention is enforced before 7.10 ships
+- [ ] `docs/onboarding-checklist.md` (issue 7.13) gains a "TS or JS host?" question reflecting this learning
+
+### Issue 7.4 — MSAL identity rule for WMS
+**Description:** SCH used `String(userId)` (internal int from a custom auth store). WMS authenticates via Entra/AAD; the natural distinct id is the AAD `oid` claim (a stable per-user GUID within tenant). This is a one-way decision — re-keying identity later loses session continuity for every existing user.
+**Decisions needed:**
+- Use AAD `oid` directly (stable GUID; identifying within tenant; not PHI per se but tenant-correlatable)
+- Hash it (`sha256(tenantId + oid)`) — privacy-cleaner, harder to correlate with admin reports manually
+- Map AAD `oid` → internal user int via a WMSAPI lookup, use the int (matches SCH's pattern; requires a backend round-trip on `identify()`)
+**Acceptance criteria:**
+- [ ] Decision recorded in `docs/identity-rules.md` with rationale and a worked example
+- [ ] WMSSite `identify()` honors the rule
+- [ ] WMSAPI distinct-id strategy for server events documented in same doc (likely `oid`-derived for user-attributed events; `system:background-service` and `api_client_{id}` rules unchanged)
+- [ ] No raw email, UPN, or `name` claim ever passed to `identify()` or as an event property
+
+### Issue 7.5 — Add correlation-ID middleware to WMSAPI
+**Description:** WMSAPI has no correlation-ID middleware (zero matches across the repo). Without it, Phase 5's cross-process error join is a no-op for WMS — clicking an event in the timeline cannot surface the BE error that caused it. This is net-new infrastructure for WMSAPI, not a port from SCH.
+**Acceptance criteria:**
+- [ ] Middleware reads incoming `X-Correlation-Id` (or generates a GUID v4), exposes via `HttpContext.Items["CorrelationId"]` and `Activity.Current?.SetTag(...)`
+- [ ] Sets the same id on the response header
+- [ ] Logger scope (`ILogger.BeginScope`) enriches every log line with the id
+- [ ] Outbound `HttpClient` registrations gain a delegating handler that propagates the id on downstream calls (fed by 7.2's HttpClient inventory)
+- [ ] WMSSite Axios interceptors generate `crypto.randomUUID()` per request and set `X-Correlation-Id`
+- [ ] One end-to-end test: trigger a 500 from WMSSite; confirm same correlation id reaches both the FE `api_request_failed` and the BE `server_error_occurred`
+
+### Issue 7.6 — Add global exception middleware to WMSAPI
+**Description:** WMSAPI has no `GlobalExceptionMiddleware` (no `*Middleware*.cs`/`*Exception*.cs` files). Without it there is no centralized emission point for `server_error_occurred`. Audit existing per-controller try/catch first to avoid double-emit on routes that already swallow exceptions.
+**Acceptance criteria:**
+- [ ] Per-controller catches inventoried in 7.2 are reconciled (kept, removed, or made non-swallowing) so the middleware sees the exceptions worth emitting
+- [ ] Middleware registered after auth, before MVC
+- [ ] Emits `server_error_occurred` only on true unhandled exceptions (5xx), never on 4xx or expected business errors
+- [ ] Uses correlation id from 7.5
+- [ ] Response sanitized — no exception messages or stack traces leak to clients
+- [ ] Integration test confirms emission on a forced exception, no emission on a controlled 400
+
+### Issue 7.7 — WMSAPI background-service error wiring
+**Description:** `BackgroundProcessingService` exists; 7.2's audit will surface any others. All `IHostedService`/`BackgroundService` implementations must emit `background_job_failed` from catch blocks. BG dedup (4.8 static 15-min default) is acceptable; per-app override deferred to 8.2.
+**Acceptance criteria:**
+- [ ] All BG services from 7.2 inventory wired
+- [ ] `background_job_failed` emits with `job_name`, `error_type`, `correlation_id` (generated per-iteration if no inbound request)
+- [ ] Integration test: 100 identical failures within 15 min → 1 incident with `count=100`
+
+### Issue 7.8 — WMSSite ErrorBoundary strategy
+**Description:** Audit existing React error boundaries (output of 7.1) before wiring the SDK's. WMSSite uses MUI heavily and may have feature-area boundaries; replacement vs. wrapping vs. coexistence is a deliberate choice.
+**Acceptance criteria:**
+- [ ] Strategy chosen and documented in `docs/audits/wmssite.md`: replace top-level only / wrap existing / add layer
+- [ ] `frontend_exception` emits `error_type`, `source`, `component_stack_depth` only — no message, no stack, no props
+- [ ] `window.onerror` and `unhandledrejection` listeners installed once at app root (mirrors SCH pattern)
+
+### Issue 7.9 — `WMS_EVENT_CATALOG.md`
+**Description:** App-specific events on top of the global Phase 1 set. WMS-sensitive routes (intake, provider notes, wound assessment) explicitly listed as never-record. Privacy reviewer sign-off required before UAT — WMS surfaces are different enough from SCH that the SCH allowlist tuning does not transfer.
 **Acceptance criteria:**
 - [ ] App-specific events listed with allowed props
-- [ ] References `docs/event-catalog.md` for global rules
+- [ ] Never-record route list reviewed against current WMSSite routes (input from 7.1)
+- [ ] References `docs/event-catalog.md` and `docs/identity-rules.md` for global rules
+- [ ] Privacy reviewer sign-off committed
 
-### Issue 7.4 — Onboard `SecondApp_UI`
-**Description:** Mirror the post-migration SCH_UI integration pattern.
-**Acceptance criteria:** Phase 1 events live, zero PHI, PR reviewed.
-
-### Issue 7.5 — Onboard `SecondApp_API`
-**Description:** DI-register `AddAdaptiveObservability(...)`; install error middleware; hook BG jobs.
-**Acceptance criteria:** Phase 1 events live, zero exception messages/stacks.
-
-### Issue 7.6 — Validate multi-app dashboard switching
-**Description:** Filters scope cleanly across both apps; no cross-app data leakage.
+### Issue 7.10 — Onboard WMSSite (integration)
+**Description:** Mirror the SCH integration pattern. Adapted for JS-not-TS (per 7.3), MSAL identity (per 7.4), MUI ErrorBoundary strategy (per 7.8).
 **Acceptance criteria:**
-- [ ] Manual smoke test against both apps
-- [ ] Automated test foreshadowing Phase 8 RBAC: a user with access to App A cannot query App B's data
+- [ ] Branch `feature/adaptive-observability` off `dev` on WMSSite
+- [ ] All Phase 1 emission points wired
+- [ ] `init()` ordering verified to run after MSAL ready, with early `page_viewed` events queued and flushed
+- [ ] Zero PHI in any captured event (manual review of one full session)
+- [ ] Zero `SafetyViolations` in 24h dev traffic before promoting to UAT
 
-### Issue 7.7 — Third-app onboarding checklist
-**Description:** Onboarding questions as a checklist file teams fill in before onboarding (frontend framework, backend framework, auth method, deployment env, DB type, correlation IDs supported, BG jobs, PHI/PII presence, never-replay pages).
+### Issue 7.11 — Onboard WMSAPI (integration)
+**Description:** Depends on 7.5/7.6/7.7. DI-register `AddAdaptiveObservability(...)`; consume correlation id from 7.5 middleware; emit via 7.6 exception middleware and 7.7 BG wiring.
 **Acceptance criteria:**
-- [ ] `docs/onboarding-checklist.md` committed
+- [ ] Branch `feature/adaptive-observability` off `dev` on WMSAPI
+- [ ] DI registration via `AddAdaptiveObservability(...)`
+- [ ] Phase 1 server events emit (no exception messages/stacks)
+- [ ] Smoke test confirms ingestion in adaptive-observability Dev with correct app/env attribution
+
+### Issue 7.12 — Validate multi-app dashboard switching
+**Description:** Filters scope cleanly across SCH + WMS apps; no cross-app data leakage.
+**Acceptance criteria:**
+- [ ] Manual smoke test against both app pairs
+- [ ] Automated test foreshadowing Phase 8 RBAC: a user with access to SCH cannot query WMS data and vice versa
+
+### Issue 7.13 — Third-app onboarding checklist
+**Description:** Onboarding questions as a checklist file teams fill in before onboarding. Enriched by what WMS made us learn.
+**Acceptance criteria:**
+- [ ] `docs/onboarding-checklist.md` committed, including:
+  - Frontend: framework, **TS or JS** (event-allowlist enforcement strategy, per 7.3), bundler, router, state mgmt
+  - Backend: framework, ORM (EF/Dapper/other), **correlation-ID middleware in place or net-new** (per 7.5), **global exception middleware in place or net-new** (per 7.6), all `IHostedService` implementations
+  - Auth: custom JWT, **AAD/MSAL** (distinct-id rule per 7.4), or other
+  - Deployment env, DB type, PHI/PII presence, never-record routes, never-replay routes (Phase 9)
 
 ---
 
@@ -682,25 +767,30 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 ## Cross-Cutting
 
 ### Privacy review gates
-- **Before Phase 6 SCH UAT cutover:** sign-off that ported event catalog matches `POSTHOG_EVENT_CATALOG.md` exactly.
-- **Before Phase 6 SCH Prod cutover:** parity variance < threshold for 5 days; 48h UAT-on-adaptive-only with zero `SafetyViolations`.
+- **Before Phase 6 SCH UAT entry:** event catalog committed in adaptive-observability matches the Phase 1 event set inherited from `POSTHOG_EVENT_CATALOG.md`; route-normalization fixtures from SCH_UI ported (4.2).
+- **Before Phase 6 SCH Prod cutover:** 5 business days UAT with zero `SafetyViolations`; privacy/compliance reviewer sign-off committed.
+- **Before Phase 7 WMS UAT entry:** `WMS_EVENT_CATALOG.md` committed with WMS-specific never-record routes; MSAL identity rule (7.4) recorded in `docs/identity-rules.md`; correlation-ID end-to-end test (7.5) green.
 - **Before Phase 9 (replay) entry:** rrweb dependency approved; masking policy reviewed; Blob storage topology decided; `docs/replay.md` committed.
 - **Before Phase 9 prod enablement (per-app):** 2-week UAT masking audit clean; `ReplayViewer` RBAC in place; replay-specific retention job verified; admin-set `ApprovedForProductionAt` recorded.
 
-### Migration risks (carried from PostHog hardening backlog)
-- **Pre-release dependency:** SCH_API currently uses `PostHog.AspNetCore v2.5.0` pre-release. Plan removes it in Issue 6.8; until then, monitor for breaking changes.
+### Onboarding risks
+- **PostHog scaffolding is unmerged, not deployed.** SCH `feature/posthog-implementation` was never merged to `dev`/`main` (verified 2026-04-30). Treating it as live infrastructure would silently misroute Phase 6 work; instead it is reused as scaffolding only. If anyone re-merges that branch, Phase 6 needs re-evaluation.
+- **WMSAPI lacks correlation-ID and exception middleware** (verified — zero matches across the repo). Phase 7 net-new infra (7.5 + 7.6), not a port.
+- **WMSSite is JavaScript, not TypeScript.** SDK's compile-time event allowlist becomes runtime-only unless 7.3's chosen strategy enforces it. Server-side `SafetyViolations` is the safety net.
+- **MSAL identity is a one-way decision.** Re-keying `distinct_id` later loses session continuity for every existing user. 7.4 must land before WMSSite ships any `identify()` call.
 - **Replay safety:** UAT replay masking has not been audited. Keep replay disabled until Phase 9 masking audit signs off; prod stays off-by-default per app even after sign-off.
 - **Role names:** confirm `auth_login_success` `roles` property contains generic role names only, not user-specific labels.
-- **Token threshold edge cases:** route normalization must not turn `posthog-500-test` into `posthog-{id}-test`. Port the validated SCH_UI threshold tuning verbatim.
+- **Token threshold edge cases:** route normalization must not turn `posthog-500-test` into `posthog-{id}-test`. SCH_UI threshold tuning ported verbatim (4.2).
 - **4xx tracking:** explicitly out of scope for Phase 1. Decision deferred to a future event-catalog update.
 
 ### Verification (end-to-end test plan)
 1. CI runs unit + integration tests on every PR.
 2. **Phase 4 / 7 specific:** SDK quickstart emits each Phase 1 event; dashboard shows them under the correct app/env; submitting an unsafe event (`{ "email": "x@y.com" }`) returns 422 and writes a `SafetyViolations` row with no `Events` row.
-3. **Phase 6 specific:** dual-write composite produces matching counts in PostHog and adaptive-observability for 5 business days.
+3. **Phase 6 specific:** SCH UAT runs on adaptive-observability for 5 business days with zero `SafetyViolations` and the privacy reviewer sign-off committed before Prod cutover. (Former dual-write parity gate dropped — see Phase 6 re-scope decision.)
+4. **Phase 7 specific:** WMS end-to-end correlation-ID test (7.5) green — same id appears on both FE `api_request_failed` and BE `server_error_occurred` from one user-action trigger.
 
 ### Still-open cross-cutting questions
-- **IaC tool** (Bicep vs. Terraform vs. stay on `az` CLI) — needed before Phase 2 UAT/Prod provisioning.
+- ~~**IaC tool** (Bicep vs. Terraform vs. stay on `az` CLI)~~ — resolved 2026-04-30: stay on `az` CLI scripts.
 - **Identity source for Phase 8 RBAC** (Entra/AAD groups vs. local users).
 - **Email provider for alerts** (ACS vs. SendGrid) — Phase 8.
 - **EF migration timing.** Phase 1 ships `EnsureCreatedAsync` for dev. Phase 4 + 5 added `BackgroundJobFailures` and `Sessions`, growing the schema. Phase 2.4 already owns the `migrations add Initial` + switch to `MigrateAsync` cutover; flagged here so the surface area is visible when that work runs.

@@ -14,6 +14,7 @@ import {
   type ReplayConfig,
 } from "./replay.js";
 import { normalizeRoute, getFeatureArea, endpointGroupForUrl } from "./route.js";
+import { sendSessionStart, sendSessionEnd } from "./sessionBracket.js";
 
 export type { EventName, PropsFor, EventMap } from "./events.js";
 export { normalizeRoute, getFeatureArea, endpointGroupForUrl } from "./route.js";
@@ -30,6 +31,7 @@ export interface InitOptions {
   flushIntervalMs?: number;
   maxRetries?: number;
   debug?: boolean;
+  trackSessions?: boolean;
   replay?: Partial<ReplayConfig>;
   replayAdapter?: ReplayAdapter;
 }
@@ -42,6 +44,7 @@ interface InternalState {
   transport: Transport;
   distinctId: string | null;
   sessionId: string;
+  sessionStarted: boolean;
   replayConfig: ReplayConfig;
   replayAdapter: ReplayAdapter;
 }
@@ -81,10 +84,12 @@ export function init(options: InitOptions): void {
       flushIntervalMs: transportConfig.flushIntervalMs,
       maxRetries: transportConfig.maxRetries,
       debug: transportConfig.debug,
+      trackSessions: options.trackSessions ?? true,
     },
     transport: new Transport(transportConfig),
     distinctId: null,
     sessionId,
+    sessionStarted: false,
     replayConfig,
     replayAdapter,
   };
@@ -94,6 +99,7 @@ export function init(options: InitOptions): void {
   if (typeof window !== "undefined") {
     window.addEventListener("beforeunload", () => {
       void state?.transport.flush();
+      maybeSendSessionEnd();
     });
   }
 }
@@ -111,6 +117,7 @@ export function reset(): void {
   if (!state) return;
   state.distinctId = null;
   state.sessionId = resetSessionId();
+  state.sessionStarted = false;
 }
 
 export function getSessionId(): string | null {
@@ -120,6 +127,7 @@ export function getSessionId(): string | null {
 export function track<E extends EventName>(event: E, properties?: PropsFor<E>): void {
   if (!state) return;
   const distinctId = state.distinctId ?? "anonymous";
+  maybeSendSessionStart(distinctId);
   const props = withReleaseSha(properties as Record<string, unknown> | undefined);
   enqueue({
     kind: "event",
@@ -155,6 +163,7 @@ export function captureException(input: CaptureExceptionInput): void {
     void state.replayAdapter.flush();
   }
   const distinctId = state.distinctId ?? "anonymous";
+  maybeSendSessionStart(distinctId);
   const properties = withReleaseSha({
     error_type: input.errorType,
     source: input.source,
@@ -203,8 +212,27 @@ export async function flush(): Promise<void> {
 export async function shutdown(): Promise<void> {
   if (!state) return;
   state.replayAdapter.stop();
+  maybeSendSessionEnd();
   await state.transport.shutdown();
   state = null;
+}
+
+function maybeSendSessionStart(distinctId: string): void {
+  if (!state || !state.options.trackSessions || state.sessionStarted) return;
+  state.sessionStarted = true;
+  sendSessionStart(
+    { ingestUrl: state.options.ingestUrl, apiKey: state.options.apiKey, debug: state.options.debug },
+    { session_id: state.sessionId, distinct_id: distinctId, release_sha: state.options.releaseSha },
+  );
+}
+
+function maybeSendSessionEnd(): void {
+  if (!state || !state.options.trackSessions || !state.sessionStarted) return;
+  state.sessionStarted = false;
+  sendSessionEnd(
+    { ingestUrl: state.options.ingestUrl, apiKey: state.options.apiKey, debug: state.options.debug },
+    { session_id: state.sessionId },
+  );
 }
 
 function enqueue(env: Envelope): void {

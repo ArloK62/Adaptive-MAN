@@ -68,14 +68,14 @@ Phase 4 ships only the no-op adapter and the type contract — no `rrweb` depend
 
 | Function | Notes |
 |---|---|
-| `init(options)` | Idempotent; calling with `enabled: false` is a no-op. |
+| `init(options)` | Idempotent; calling with `enabled: false` is a no-op. Set `trackSessions: false` to opt out of automatic `/sessions/start` + `/sessions/end` calls. |
 | `identify(distinctId)` | String only. No `user_` prefix per platform identity rules. |
 | `track(event, props)` | Compile-time event allowlist (TS unions) per `events.ts`. |
 | `capturePageView(path?, featureArea?)` | Auto-normalizes route. |
 | `captureException({ errorType, source, componentStackDepth, normalizedRoute })` | Never accepts message/stack text. |
 | `captureFailedRequest({ url, method, httpStatusCode, isNetworkError, correlationId })` | |
 | `flush()` | Force-send pending batch. |
-| `shutdown()` | Drains transport + stops replay adapter. |
+| `shutdown()` | Drains transport, stops replay adapter, and sends `/sessions/end`. |
 | `getSessionId()` | The shared id used by replay (Phase 9) and session timeline (Phase 5). |
 | `reset()` | New session id, clear distinct id (call on logout). |
 
