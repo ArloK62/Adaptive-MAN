@@ -342,10 +342,12 @@ Each phase has a **Goal**, **Exit criteria**, and **Issues** ready to file in Gi
 
 ### Issue 5.2 — Spike PR for derived vs materialized
 
-**Status:** the *decision* is recorded in [`docs/architecture.md`](docs/architecture.md) (derived for MVP, revisit when per-session entry counts push past ~10k). The *spike PR with measured numbers against a 1M-event dataset* the original criterion asked for was not produced; the argument is from index coverage and expected per-session entry counts, not from benchmarks.
+**Status:** the *decision* is recorded in [`docs/architecture.md`](docs/architecture.md) (derived for MVP, revisit when per-session entry counts push past ~10k). Benchmark harness lives at [`backend/src/Observability.Benchmarks`](backend/src/Observability.Benchmarks/); two anchor cells ran against local Docker MSSQL — results in [`docs/perf.md`](docs/perf.md). The 10k and 100k target-event cells are deferred (1M-event seeds take long enough on local Docker to trade off against shipping). Re-run against Azure SQL `ObservabilityDev` once Brandon provisions it.
 
 **Acceptance criteria:**
-- [ ] (Optional, defer to Phase 8 perf review) Run a benchmark spike with seeded synthetic data and record the latency + storage delta in `docs/perf.md`
+- [x] Benchmark spike with seeded synthetic data; latency results recorded in `docs/perf.md` (partial — 2 of 8 grid cells; remainder deferred)
+- [ ] Run the deferred 10k and 100k target-event cells (the materialization-breakeven test) — `dotnet run -- --grid` once Docker is convenient
+- [ ] Re-run anchor cells against Azure SQL Dev after Phase 2.4 lands
 - [ ] Confirm the derived approach holds at ingestion volumes from real onboarded apps
 
 ### Issue 5.5 — End-to-end correlation id propagation (cross-link to Phase 6)
