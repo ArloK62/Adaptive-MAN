@@ -33,4 +33,4 @@ Prints a markdown results table to stdout. Cells reseed from scratch each time.
 
 50 iterations of `SessionTimelineQuery.RunAsync` after 5 warmups. Each iteration uses a fresh `DbContext` so connection pooling is exercised but tracking caches don't accumulate. Reported: p50 / p95 / p99 in ms.
 
-The seed is destructive — `EnsureDeletedAsync` then `MigrateAsync` runs first.
+The seed is destructive — `EnsureDeletedAsync` then `EnsureCreatedAsync` runs first. (The bench project uses `EnsureCreatedAsync` so it doesn't depend on the EF Initial migration that ships in PR #6; switch to `MigrateAsync` once that lands so the bench schema applies via the same path as deployed envs.)
